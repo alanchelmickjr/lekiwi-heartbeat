@@ -1,0 +1,854 @@
+# LeKiwi Fleet Control System - Technical Specification
+## Decentralized Robot Fleet Management via Gun.js
+
+### Executive Summary
+A peer-to-peer robot fleet management system eliminating single points of failure through distributed architecture. Each LeKiwi robot operates as an autonomous node while maintaining real-time synchronization with the fleet network.
+
+---
+
+## 1. System Architecture
+
+### 1.1 Network Topology
+```
+┌─────────────────────────────────────────────────┐
+│                  Gun.js P2P Network              │
+├─────────────────────────────────────────────────┤
+│  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐       │
+│  │Robot1│──│Robot2│──│Robot3│──│Robot4│  ...  │
+│  └──────┘  └──────┘  └──────┘  └──────┘       │
+│      ↕         ↕         ↕         ↕           │
+│  ┌────────────────────────────────────┐        │
+│  │    Management Interface (Browser)   │        │
+│  └────────────────────────────────────┘        │
+└─────────────────────────────────────────────────┘
+```
+
+### 1.2 Core Components
+
+#### LeKiwi Node Agent (`lekiwi-node`)
+- **Location**: `/opt/lekiwi/node/`
+- **Language**: Python 3.11+ with asyncio
+- **Dependencies**: gun-py, fastapi, uvicorn, psutil, aiofiles
+- **Responsibilities**:
+  - Robot telemetry collection
+  - Command execution
+  - Image management
+  - Local web UI (port 8080)
+  - Gun.js peer operations
+
+#### Fleet Dashboard (`lekiwi-dashboard`)
+- **Type**: Progressive Web App
+- **Framework**: React + TypeScript
+- **Dependencies**: gun, react-gun, recharts, tailwindcss
+- **Features**:
+  - Real-time fleet visualization
+  - Command dispatch
+  - Telemetry analytics
+  - Image deployment
+
+---
+
+## 2. Data Schema
+
+### 2.1 Gun.js Graph Structure
+```javascript
+{
+  "fleet": {
+    "robots": {
+      "{robot-uuid}": {
+        "identity": {
+          "name": "lekiwi-001",
+          "model": "LeKiwi-v2",
+          "serial": "LK2024001",
+          "created": 1704067200000
+        },
+        "telemetry": {
+          "timestamp": 1704067200000,
+          "status": "operational",
+          "position": { "x": 10.5, "y": 20.3, "z": 0, "heading": 90 },
+          "battery": { "voltage": 12.6, "current": 2.1, "soc": 85 },
+          "sensors": {
+            "lidar": { "status": "ok", "fps": 10 },
+            "cameras": [
+              { "id": "front", "status": "ok", "fps": 30 },
+              { "id": "rear", "status": "ok", "fps": 30 }
+            ],
+            "imu": { "status": "ok", "temp": 35.2 }
+          },
+          "compute": {
+            "cpu": { "usage": 45, "temp": 62, "freq": 2400 },
+            "ram": { "used": 3200, "total": 8192 },
+            "disk": { "used": 12000, "total": 64000 },
+            "gpu": { "usage": 30, "temp": 58, "mem": 512 }
+          },
+          "network": {
+            "ip": "192.168.1.100",
+            "latency": 12,
+            "bandwidth": { "up": 10.5, "down": 45.2 }
+          }
+        },
+        "commands": {
+          "pending": [],
+          "executing": null,
+          "history": [
+            {
+              "id": "cmd-123",
+              "type": "navigate",
+              "params": { "target": [15, 25, 0] },
+              "status": "completed",
+              "timestamp": 1704067000000,
+              "duration": 5200
+            }
+          ]
+        },
+        "config": {
+          "navigation": {
+            "max_speed": 2.0,
+            "max_accel": 0.5,
+            "obstacle_distance": 1.0
+          },
+          "telemetry": {
+            "interval": 1000,
+            "batch_size": 10
+          },
+          "autonomy": {
+            "mode": "semi-auto",
+            "safety_level": "high"
+          }
+        },
+        "images": {
+          "current": {
+            "version": "2.1.0",
+            "hash": "sha256:abc123...",
+            "installed": 1704000000000
+          },
+          "available": ["2.1.1", "2.2.0-beta"],
+          "rollback": "2.0.5"
+        }
+      }
+    },
+    "missions": {
+      "{mission-uuid}": {
+        "name": "Warehouse Patrol",
+        "robots": ["robot-uuid-1", "robot-uuid-2"],
+        "waypoints": [[0,0], [10,0], [10,10], [0,10]],
+        "status": "active",
+        "started": 1704067200000
+      }
+    },
+    "policies": {
+      "global": {
+        "telemetry_interval": 1000,
+        "command_timeout": 30000,
+        "auto_update": false,
+        "safety_mode": "standard"
+      },
+      "groups": {
+        "warehouse": { "robots": [], "overrides": {} },
+        "outdoor": { "robots": [], "overrides": {} }
+      }
+    },
+    "alerts": {
+      "{alert-uuid}": {
+        "robot": "robot-uuid",
+        "type": "battery_low",
+        "severity": "warning",
+        "message": "Battery at 15%",
+        "timestamp": 1704067200000,
+        "acknowledged": false
+      }
+    }
+  }
+}
+```
+
+---
+
+## 3. Implementation Details
+
+### 3.1 LeKiwi Node Agent
+
+#### Main Application (`/opt/lekiwi/node/main.py`)
+```python
+"""
+LeKiwi Node Agent - Main Application
+Handles robot telemetry, command execution, and Gun.js peer operations
+"""
+
+import asyncio
+import uuid
+from typing import Dict, Any, Optional
+from datetime import datetime
+import json
+
+# Core imports
+from fastapi import FastAPI, WebSocket
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+import psutil
+from gun import Gun
+
+# Local modules
+from .telemetry import TelemetryCollector
+from .commands import CommandExecutor
+from .images import ImageManager
+from .navigation import NavigationController
+
+class LeKiwiNode:
+    def __init__(self, config_path: str = "/etc/lekiwi/config.json"):
+        self.config = self._load_config(config_path)
+        self.robot_id = self.config.get("robot_id", str(uuid.uuid4()))
+        
+        # Initialize Gun.js
+        self.gun = Gun(peers=self.config.get("peers", []))
+        self.robot_ref = self.gun.get('fleet').get('robots').get(self.robot_id)
+        
+        # Initialize components
+        self.telemetry = TelemetryCollector(self.config)
+        self.executor = CommandExecutor(self.config)
+        self.images = ImageManager(self.config)
+        self.nav = NavigationController(self.config)
+        
+        # FastAPI for local UI
+        self.app = FastAPI(title="LeKiwi Node")
+        self._setup_routes()
+        
+    async def start(self):
+        """Main event loop"""
+        tasks = [
+            self._telemetry_loop(),
+            self._command_loop(),
+            self._heartbeat_loop(),
+            self._serve_ui()
+        ]
+        await asyncio.gather(*tasks)
+    
+    async def _telemetry_loop(self):
+        """Collect and publish telemetry data"""
+        while True:
+            data = await self.telemetry.collect()
+            self.robot_ref.get('telemetry').put(data)
+            await asyncio.sleep(self.config['telemetry']['interval'] / 1000)
+    
+    async def _command_loop(self):
+        """Listen for and execute commands"""
+        self.robot_ref.get('commands').get('pending').on(
+            self._handle_command
+        )
+    
+    async def _handle_command(self, data, key):
+        """Execute incoming command"""
+        if data:
+            # Move to executing
+            self.robot_ref.get('commands').get('executing').put(data)
+            
+            # Execute based on type
+            result = await self.executor.execute(data)
+            
+            # Update history
+            history_entry = {
+                **data,
+                'status': result['status'],
+                'timestamp': datetime.now().timestamp() * 1000,
+                'duration': result.get('duration', 0)
+            }
+            self.robot_ref.get('commands').get('history').set(history_entry)
+            
+            # Clear executing
+            self.robot_ref.get('commands').get('executing').put(None)
+```
+
+#### Telemetry Collector (`/opt/lekiwi/node/telemetry.py`)
+```python
+"""
+Telemetry collection for robot sensors and system metrics
+"""
+
+import asyncio
+import psutil
+import subprocess
+from typing import Dict, Any
+
+class TelemetryCollector:
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.sensor_interfaces = self._init_sensors()
+    
+    async def collect(self) -> Dict[str, Any]:
+        """Collect all telemetry data"""
+        return {
+            "timestamp": self._timestamp(),
+            "status": await self._get_status(),
+            "position": await self._get_position(),
+            "battery": await self._get_battery(),
+            "sensors": await self._get_sensors(),
+            "compute": self._get_compute_metrics(),
+            "network": await self._get_network_metrics()
+        }
+    
+    def _get_compute_metrics(self) -> Dict[str, Any]:
+        """System resource metrics"""
+        cpu_freq = psutil.cpu_freq()
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        # GPU metrics (if available)
+        gpu_stats = self._get_gpu_stats()
+        
+        return {
+            "cpu": {
+                "usage": psutil.cpu_percent(interval=0.1),
+                "temp": self._get_cpu_temp(),
+                "freq": cpu_freq.current if cpu_freq else 0
+            },
+            "ram": {
+                "used": memory.used // 1048576,  # MB
+                "total": memory.total // 1048576
+            },
+            "disk": {
+                "used": disk.used // 1048576,
+                "total": disk.total // 1048576
+            },
+            "gpu": gpu_stats
+        }
+    
+    def _get_cpu_temp(self) -> float:
+        """Read CPU temperature"""
+        try:
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                return float(f.read()) / 1000.0
+        except:
+            return 0.0
+    
+    def _get_gpu_stats(self) -> Dict[str, Any]:
+        """NVIDIA GPU stats if available"""
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=utilization.gpu,temperature.gpu,memory.used',
+                 '--format=csv,noheader,nounits'],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                usage, temp, mem = result.stdout.strip().split(', ')
+                return {
+                    "usage": float(usage),
+                    "temp": float(temp),
+                    "mem": float(mem)
+                }
+        except:
+            pass
+        return {"usage": 0, "temp": 0, "mem": 0}
+```
+
+### 3.2 Command System
+
+#### Command Types (`/opt/lekiwi/node/commands.py`)
+```python
+"""
+Command execution system for robot control
+"""
+
+from enum import Enum
+from typing import Dict, Any, Optional
+import asyncio
+import time
+
+class CommandType(Enum):
+    # Movement
+    NAVIGATE = "navigate"
+    STOP = "stop"
+    ROTATE = "rotate"
+    
+    # System
+    REBOOT = "reboot"
+    UPDATE = "update"
+    ROLLBACK = "rollback"
+    
+    # Configuration
+    SET_CONFIG = "set_config"
+    GET_CONFIG = "get_config"
+    
+    # Mission
+    START_MISSION = "start_mission"
+    ABORT_MISSION = "abort_mission"
+    
+    # Diagnostic
+    RUN_DIAGNOSTIC = "run_diagnostic"
+    CALIBRATE = "calibrate"
+
+class CommandExecutor:
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.handlers = {
+            CommandType.NAVIGATE: self._handle_navigate,
+            CommandType.STOP: self._handle_stop,
+            CommandType.ROTATE: self._handle_rotate,
+            CommandType.REBOOT: self._handle_reboot,
+            CommandType.UPDATE: self._handle_update,
+            CommandType.ROLLBACK: self._handle_rollback,
+            CommandType.SET_CONFIG: self._handle_set_config,
+            CommandType.RUN_DIAGNOSTIC: self._handle_diagnostic
+        }
+        
+    async def execute(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a command and return result"""
+        start_time = time.time()
+        cmd_type = CommandType(command.get('type'))
+        
+        if cmd_type not in self.handlers:
+            return {
+                'status': 'error',
+                'message': f'Unknown command type: {cmd_type}'
+            }
+        
+        try:
+            result = await self.handlers[cmd_type](command.get('params', {}))
+            return {
+                'status': 'completed',
+                'result': result,
+                'duration': int((time.time() - start_time) * 1000)
+            }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': str(e),
+                'duration': int((time.time() - start_time) * 1000)
+            }
+    
+    async def _handle_navigate(self, params: Dict[str, Any]) -> Any:
+        """Navigate to target position"""
+        target = params.get('target', [0, 0, 0])
+        speed = params.get('speed', 1.0)
+        
+        # Call navigation controller
+        from .navigation import NavigationController
+        nav = NavigationController(self.config)
+        return await nav.navigate_to(target, speed)
+    
+    async def _handle_stop(self, params: Dict[str, Any]) -> Any:
+        """Emergency stop"""
+        # Send stop command to motor controllers
+        return {"stopped": True}
+```
+
+### 3.3 Image Management
+
+#### OTA Update System (`/opt/lekiwi/node/images.py`)
+```python
+"""
+Over-the-air update system with A/B partitioning
+"""
+
+import hashlib
+import asyncio
+import aiofiles
+import aiohttp
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+class ImageManager:
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.images_dir = Path("/opt/lekiwi/images")
+        self.current_partition = self._get_current_partition()
+        
+    async def download_image(self, version: str, url: str, checksum: str) -> bool:
+        """Download and verify new image"""
+        target_path = self.images_dir / f"lekiwi-{version}.img"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return False
+                
+                # Stream download with progress
+                async with aiofiles.open(target_path, 'wb') as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        await f.write(chunk)
+        
+        # Verify checksum
+        if not await self._verify_checksum(target_path, checksum):
+            target_path.unlink()
+            return False
+        
+        return True
+    
+    async def apply_update(self, version: str) -> bool:
+        """Apply update to inactive partition"""
+        image_path = self.images_dir / f"lekiwi-{version}.img"
+        
+        if not image_path.exists():
+            return False
+        
+        # Determine target partition
+        target_partition = 'A' if self.current_partition == 'B' else 'B'
+        
+        # Write image to inactive partition
+        partition_device = f"/dev/mmcblk0p{2 if target_partition == 'A' else 3}"
+        
+        async with aiofiles.open(image_path, 'rb') as src:
+            async with aiofiles.open(partition_device, 'wb') as dst:
+                while chunk := await src.read(1048576):  # 1MB chunks
+                    await dst.write(chunk)
+        
+        # Update bootloader to use new partition
+        await self._set_boot_partition(target_partition)
+        
+        return True
+    
+    async def rollback(self) -> bool:
+        """Switch back to previous partition"""
+        previous = 'A' if self.current_partition == 'B' else 'B'
+        return await self._set_boot_partition(previous)
+```
+
+### 3.4 Web Dashboard
+
+#### React Dashboard (`/dashboard/src/App.tsx`)
+```typescript
+/**
+ * LeKiwi Fleet Dashboard
+ * Real-time fleet management interface
+ */
+
+import React, { useEffect, useState } from 'react';
+import Gun from 'gun';
+import { RobotCard } from './components/RobotCard';
+import { FleetMap } from './components/FleetMap';
+import { TelemetryChart } from './components/TelemetryChart';
+import { CommandPanel } from './components/CommandPanel';
+import { AlertsPanel } from './components/AlertsPanel';
+
+// Initialize Gun.js
+const gun = Gun({
+  peers: ['ws://localhost:8765/gun', 'https://gun-relay.lekiwi.io/gun']
+});
+
+interface Robot {
+  id: string;
+  identity: any;
+  telemetry: any;
+  commands: any;
+  config: any;
+}
+
+export const App: React.FC = () => {
+  const [robots, setRobots] = useState<Map<string, Robot>>(new Map());
+  const [selectedRobot, setSelectedRobot] = useState<string | null>(null);
+  const [alerts, setAlerts] = useState<any[]>([]);
+  
+  useEffect(() => {
+    // Subscribe to robot updates
+    gun.get('fleet').get('robots').map().on((data, id) => {
+      if (data) {
+        setRobots(prev => new Map(prev).set(id, { id, ...data }));
+      }
+    });
+    
+    // Subscribe to alerts
+    gun.get('fleet').get('alerts').map().on((alert, id) => {
+      if (alert && !alert.acknowledged) {
+        setAlerts(prev => [...prev, { id, ...alert }]);
+      }
+    });
+  }, []);
+  
+  const sendCommand = (robotId: string, command: any) => {
+    const cmdId = `cmd-${Date.now()}`;
+    gun.get('fleet')
+       .get('robots')
+       .get(robotId)
+       .get('commands')
+       .get('pending')
+       .set({ id: cmdId, ...command });
+  };
+  
+  return (
+    <div className="min-h-screen bg-gray-900 text-white">
+      <header className="bg-gray-800 p-4">
+        <h1 className="text-2xl font-bold">LeKiwi Fleet Control</h1>
+        <div className="mt-2 flex gap-4">
+          <span>Robots: {robots.size}</span>
+          <span>Active: {Array.from(robots.values()).filter(r => 
+            r.telemetry?.status === 'operational').length}</span>
+          <span>Alerts: {alerts.length}</span>
+        </div>
+      </header>
+      
+      <div className="grid grid-cols-12 gap-4 p-4">
+        {/* Fleet Map */}
+        <div className="col-span-8">
+          <FleetMap robots={robots} onRobotSelect={setSelectedRobot} />
+        </div>
+        
+        {/* Robot List */}
+        <div className="col-span-4 space-y-2 max-h-[600px] overflow-y-auto">
+          {Array.from(robots.values()).map(robot => (
+            <RobotCard
+              key={robot.id}
+              robot={robot}
+              selected={selectedRobot === robot.id}
+              onClick={() => setSelectedRobot(robot.id)}
+            />
+          ))}
+        </div>
+        
+        {/* Command Panel */}
+        {selectedRobot && (
+          <div className="col-span-6">
+            <CommandPanel
+              robot={robots.get(selectedRobot)!}
+              onCommand={(cmd) => sendCommand(selectedRobot, cmd)}
+            />
+          </div>
+        )}
+        
+        {/* Telemetry */}
+        {selectedRobot && (
+          <div className="col-span-6">
+            <TelemetryChart robot={robots.get(selectedRobot)!} />
+          </div>
+        )}
+        
+        {/* Alerts */}
+        <div className="col-span-12">
+          <AlertsPanel alerts={alerts} />
+        </div>
+      </div>
+    </div>
+  );
+};
+```
+
+---
+
+## 4. Deployment Guide
+
+### 4.1 Initial Setup
+
+```bash
+#!/bin/bash
+# LeKiwi Node Installation Script
+
+# Install system dependencies
+sudo apt update
+sudo apt install -y python3.11 python3-pip nodejs npm git
+
+# Create directory structure
+sudo mkdir -p /opt/lekiwi/{node,images,logs,config}
+sudo mkdir -p /etc/lekiwi
+
+# Install Python dependencies
+pip3 install fastapi uvicorn gun-py psutil aiofiles aiohttp
+
+# Clone repository
+git clone https://github.com/your-org/lekiwi-fleet.git /opt/lekiwi/src
+
+# Install Node agent
+cd /opt/lekiwi/src/node
+sudo python3 setup.py install
+
+# Configure systemd service
+sudo cp lekiwi-node.service /etc/systemd/system/
+sudo systemctl enable lekiwi-node
+sudo systemctl start lekiwi-node
+
+# Configure Gun.js peers
+cat > /etc/lekiwi/config.json << EOF
+{
+  "robot_id": "$(uuidgen)",
+  "peers": [
+    "ws://192.168.1.10:8765/gun",
+    "ws://192.168.1.11:8765/gun",
+    "https://gun-relay.lekiwi.io/gun"
+  ],
+  "telemetry": {
+    "interval": 1000
+  }
+}
+EOF
+
+echo "LeKiwi node installed successfully!"
+```
+
+### 4.2 Network Configuration
+
+```yaml
+# docker-compose.yml for Gun.js relay nodes
+version: '3.8'
+
+services:
+  gun-relay-1:
+    image: gundb/gun
+    ports:
+      - "8765:8765"
+    environment:
+      - GUN_PORT=8765
+    volumes:
+      - gun-data-1:/data
+    restart: always
+
+  gun-relay-2:
+    image: gundb/gun
+    ports:
+      - "8766:8766"
+    environment:
+      - GUN_PORT=8766
+    volumes:
+      - gun-data-2:/data
+    restart: always
+
+volumes:
+  gun-data-1:
+  gun-data-2:
+```
+
+---
+
+## 5. Security Considerations
+
+### 5.1 Authentication & Encryption
+```javascript
+// Gun.js SEA (Security, Encryption, Authorization)
+const SEA = Gun.SEA;
+
+// Generate robot keypair
+const robotKeys = await SEA.pair();
+
+// Sign telemetry data
+const signedData = await SEA.sign(telemetryData, robotKeys);
+
+// Verify signature
+const verified = await SEA.verify(signedData, robotKeys.pub);
+```
+
+### 5.2 Network Security
+- VPN overlay (WireGuard/Tailscale recommended)
+- TLS for WebSocket connections
+- Firewall rules limiting Gun.js ports
+- Rate limiting on command execution
+
+---
+
+## 6. Monitoring & Diagnostics
+
+### 6.1 Health Checks
+```python
+class HealthMonitor:
+    async def check_health(self) -> Dict[str, Any]:
+        return {
+            "gun_connected": await self._check_gun(),
+            "sensors_online": await self._check_sensors(),
+            "disk_space": self._check_disk(),
+            "memory_available": self._check_memory(),
+            "network_latency": await self._check_network()
+        }
+```
+
+### 6.2 Logging Strategy
+- Local logs: `/var/log/lekiwi/node.log`
+- Structured logging (JSON format)
+- Log rotation with logrotate
+- Critical events pushed to Gun.js
+
+---
+
+## 7. Performance Optimization
+
+### 7.1 Gun.js Tuning
+- Batch telemetry updates
+- Use `.off()` to unsubscribe from unused data
+- Implement data TTL for historical telemetry
+- Consider graph pruning for old command history
+
+### 7.2 Resource Management
+- CPU throttling for non-critical operations
+- Memory limits via systemd
+- Disk quota for image storage
+- Network bandwidth shaping for updates
+
+---
+
+## 8. Testing Strategy
+
+### 8.1 Unit Tests
+```python
+# tests/test_telemetry.py
+import pytest
+from lekiwi.node.telemetry import TelemetryCollector
+
+@pytest.mark.asyncio
+async def test_telemetry_collection():
+    collector = TelemetryCollector({})
+    data = await collector.collect()
+    
+    assert 'timestamp' in data
+    assert 'status' in data
+    assert data['compute']['cpu']['usage'] >= 0
+```
+
+### 8.2 Integration Tests
+- Multi-robot simulation
+- Network partition testing
+- Command queue stress testing
+- Image update rollback scenarios
+
+---
+
+## 9. Roadmap
+
+### Phase 1 - Foundation (Current)
+- [x] Gun.js integration
+- [x] Basic telemetry
+- [x] Command execution
+- [ ] Web dashboard MVP
+
+### Phase 2 - Advanced Features
+- [ ] Multi-robot coordination
+- [ ] Mission planning system
+- [ ] Computer vision integration
+- [ ] SLAM mapping
+
+### Phase 3 - Enterprise
+- [ ] Fleet analytics
+- [ ] Predictive maintenance
+- [ ] API gateway
+- [ ] Third-party integrations
+
+---
+
+## 10. Quick Reference
+
+### Common Commands
+```bash
+# Check node status
+systemctl status lekiwi-node
+
+# View logs
+journalctl -u lekiwi-node -f
+
+# Manual command execution
+lekiwi-cli send-command --robot-id xxx --type navigate --target "10,20,0"
+
+# Trigger update
+lekiwi-cli update --version 2.1.0 --robot-id xxx
+
+# Fleet-wide reboot
+lekiwi-cli broadcast --type reboot --group warehouse
+```
+
+### API Endpoints
+```
+GET  /api/health          - Node health status
+GET  /api/telemetry       - Current telemetry
+POST /api/command         - Execute command
+GET  /api/logs            - Recent logs
+WS   /api/stream          - Real-time telemetry stream
+```
+
+---
+
+## Contributors
+Built for LeKiwi Robotics Fleet Operations
+
+*Last Updated: 2024*

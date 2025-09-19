@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""
+LeKiwi Deploy CLI - Command-line tool for managing robot deployments
+Just like Vercel CLI but for robots!
+"""
+
+import os
+import sys
+import json
+import argparse
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, List
+
+try:
+    import requests
+    from tabulate import tabulate
+except ImportError:
+    print("Installing required packages...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "tabulate"])
+    import requests
+    from tabulate import tabulate
+
+class LeKiwiCLI:
+    """Command-line interface for LeKiwi deployments"""
+    
+    def __init__(self):
+        self.config_file = Path.home() / ".lekiwi" / "config.json"
+        self.config = self.load_config()
+        self.server_url = self.config.get("server_url", "http://localhost:8000")
+    
+    def load_config(self) -> Dict:
+        """Load CLI configuration"""
+        if self.config_file.exists():
+            with open(self.config_file, "r") as f:
+                return json.load(f)
+        return {}
+    
+    def save_config(self):
+        """Save CLI configuration"""
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, "w") as f:
+            json.dump(self.config, f, indent=2)
+    
+    def configure(self, server_url: Optional[str] = None):
+        """Configure CLI settings"""
+        if server_url:
+            self.config["server_url"] = server_url
+            self.server_url = server_url
+            self.save_config()
+            print(f"✅ Server URL set to: {server_url}")
+        else:
+            # Interactive configuration
+            print("LeKiwi Deploy Configuration")
+            print("-" * 30)
+            
+            current_server = self.config.get("server_url", "not set")
+            print(f"Current server: {current_server}")
+            
+            new_server = input("Enter deployment server URL (or press Enter to keep current): ").strip()
+            if new_server:
+                self.config["server_url"] = new_server
+                self.server_url = new_server
+                self.save_config()
+                print(f"✅ Server URL updated to: {new_server}")
+    
+    def deploy(self, version: Optional[str] = None, branch: str = "main", 
+               message: Optional[str] = None, group: str = "all"):
+        """Create a new deployment"""
+        
+        # Auto-generate version if not provided
+        if not version:
+            # Try to get from git
+            try:
+                version = subprocess.check_output(
+                    ["git", "describe", "--tags", "--always"],
+                    stderr=subprocess.DEVNULL
+                ).decode().strip()
+            except:
+                version = f"v{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        
+        # Get current git info
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            
+            author = subprocess.check_output(
+                ["git", "config", "user.name"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except:
+            commit = None
+            author = os.getenv("USER", "unknown")
+        
+        if not message:
+            try:
+                message = subprocess.check_output(
+                    ["git", "log", "-1", "--pretty=%B"],
+                    stderr=subprocess.DEVNULL
+                ).decode().strip()
+            except:
+                message = f"Deployment {version}"
+        
+        print(f"🚀 Creating deployment...")
+        print(f"   Version: {version}")
+        print(f"   Branch: {branch}")
+        print(f"   Target: {group}")
+        
+        # Create deployment
+        try:
+            response = requests.post(
+                f"{self.server_url}/api/deploy",
+                json={
+                    "version": version,
+                    "branch": branch,
+                    "commit": commit,
+                    "author": author,
+                    "message": message,
+                    "target_group": group
+                }
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            deployment_id = data.get("deployment_id")
+            
+            print(f"✅ Deployment created: {deployment_id}")
+            print(f"")
+            print(f"Robots in group '{group}' will automatically update to version {version}")
+            print(f"")
+            print(f"View status: lekiwi-deploy status")
+            print(f"View logs: lekiwi-deploy logs")
+            
+        except requests.RequestException as e:
+            print(f"❌ Deployment failed: {e}")
+            sys.exit(1)
+    
+    def list_deployments(self, limit: int = 20):
+        """List recent deployments"""
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/deployments",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            
+            deployments = response.json()
+            
+            if not deployments:
+                print("No deployments found")
+                return
+            
+            # Format as table
+            table_data = []
+            for dep in deployments:
+                timestamp = datetime.fromisoformat(dep["timestamp"])
+                time_str = timestamp.strftime("%Y-%m-%d %H:%M")
+                
+                status = "✅" if dep.get("status") == "ready" else "⏳"
+                rollback = "↩️" if dep.get("is_rollback") else ""
+                
+                table_data.append([
+                    dep["id"][:12],
+                    dep["version"],
+                    dep.get("branch", "main"),
+                    dep.get("author", "unknown")[:20],
+                    time_str,
+                    f"{status} {rollback}".strip()
+                ])
+            
+            headers = ["ID", "Version", "Branch", "Author", "Time", "Status"]
+            print("\n📦 Recent Deployments")
+            print("=" * 80)
+            print(tabulate(table_data, headers=headers, tablefmt="simple"))
+            
+        except requests.RequestException as e:
+            print(f"❌ Failed to list deployments: {e}")
+            sys.exit(1)
+    
+    def rollback(self, target: str):
+        """Rollback to a previous deployment"""
+        
+        request_data = {}
+        
+        if target.startswith("dep_"):
+            # Deployment ID
+            request_data["deployment_id"] = target
+            
+        elif target.startswith("v"):
+            # Version
+            request_data["version"] = target
+            
+        elif "ago" in target:
+            # Time-based (e.g., "2-hours-ago")
+            request_data["time_ago"] = target
+            
+        else:
+            print(f"❌ Invalid rollback target: {target}")
+            print("   Use: deployment ID (dep_xxx), version (v1.2.3), or time (2-hours-ago)")
+            sys.exit(1)
+        
+        print(f"🔄 Rolling back to: {target}")
+        
+        try:
+            response = requests.post(
+                f"{self.server_url}/api/rollback",
+                json=request_data
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            print(f"✅ Rollback initiated")
+            print(f"   New deployment: {data.get('deployment_id')}")
+            print(f"   Version: {data.get('version')}")
+            print(f"")
+            print(f"Robots will automatically switch to this version")
+            
+        except requests.RequestException as e:
+            print(f"❌ Rollback failed: {e}")
+            sys.exit(1)
+    
+    def status(self):
+        """Show robot fleet status"""
+        try:
+            response = requests.get(f"{self.server_url}/api/robots")
+            response.raise_for_status()
+            
+            robots = response.json()
+            
+            if not robots:
+                print("No robots connected")
+                return
+            
+            # Format as table
+            table_data = []
+            for robot in robots:
+                last_seen = datetime.fromisoformat(robot["last_seen"])
+                time_ago = (datetime.now() - last_seen).total_seconds()
+                
+                if time_ago < 60:
+                    status = "🟢 Online"
+                elif time_ago < 300:
+                    status = "🟡 Away"
+                else:
+                    status = "🔴 Offline"
+                
+                version = robot.get("version", "unknown")
+                deployment = robot.get("deployment_id", "none")[:8] if robot.get("deployment_id") else "none"
+                
+                table_data.append([
+                    robot["robot_id"],
+                    version,
+                    deployment,
+                    robot.get("status", "unknown"),
+                    status
+                ])
+            
+            headers = ["Robot ID", "Version", "Deployment", "Status", "Health"]
+            print("\n🤖 Robot Fleet Status")
+            print("=" * 80)
+            print(tabulate(table_data, headers=headers, tablefmt="simple"))
+            
+            # Summary
+            total = len(robots)
+            online = sum(1 for r in robots if (datetime.now() - datetime.fromisoformat(r["last_seen"])).total_seconds() < 60)
+            print(f"\nTotal: {total} | Online: {online} | Offline: {total - online}")
+            
+        except requests.RequestException as e:
+            print(f"❌ Failed to get status: {e}")
+            sys.exit(1)
+    
+    def logs(self, robot_id: Optional[str] = None, follow: bool = False):
+        """View deployment logs"""
+        if follow:
+            print("📜 Streaming logs... (Press Ctrl+C to stop)")
+            # In a real implementation, this would use WebSocket
+            print("Real-time log streaming not yet implemented")
+        else:
+            print("📜 Recent deployment activity:")
+            # This would fetch logs from the server
+            print("Log retrieval not yet implemented")
+    
+    def promote(self, from_group: str, to_group: str):
+        """Promote deployment from one group to another"""
+        print(f"📤 Promoting {from_group} → {to_group}")
+        # This would promote the current deployment of from_group to to_group
+        print("Promotion not yet implemented")
+
+def main():
+    """Main CLI entry point"""
+    
+    cli = LeKiwiCLI()
+    
+    parser = argparse.ArgumentParser(
+        description="LeKiwi Deploy - Vercel-style deployments for robot fleets",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  lekiwi-deploy deploy                    # Deploy current git HEAD
+  lekiwi-deploy deploy -v v2.1.0          # Deploy specific version
+  lekiwi-deploy deploy -g staging         # Deploy to staging group
+  
+  lekiwi-deploy list                      # List recent deployments
+  lekiwi-deploy status                    # Show robot status
+  
+  lekiwi-deploy rollback dep_abc123       # Rollback to deployment
+  lekiwi-deploy rollback v2.0.0           # Rollback to version
+  lekiwi-deploy rollback 2-hours-ago      # Rollback to 2 hours ago
+  
+  lekiwi-deploy config                    # Configure server URL
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # Deploy command
+    deploy_parser = subparsers.add_parser("deploy", help="Create a new deployment")
+    deploy_parser.add_argument("-v", "--version", help="Version to deploy")
+    deploy_parser.add_argument("-b", "--branch", default="main", help="Git branch")
+    deploy_parser.add_argument("-m", "--message", help="Deployment message")
+    deploy_parser.add_argument("-g", "--group", default="all", help="Target robot group")
+    
+    # List command
+    list_parser = subparsers.add_parser("list", help="List deployments")
+    list_parser.add_argument("-n", "--limit", type=int, default=20, help="Number of deployments to show")
+    
+    # Rollback command
+    rollback_parser = subparsers.add_parser("rollback", help="Rollback to previous deployment")
+    rollback_parser.add_argument("target", help="Deployment ID, version, or time (e.g., 2-hours-ago)")
+    
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Show robot fleet status")
+    
+    # Logs command
+    logs_parser = subparsers.add_parser("logs", help="View deployment logs")
+    logs_parser.add_argument("-r", "--robot", help="Specific robot ID")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow logs in real-time")
+    
+    # Config command
+    config_parser = subparsers.add_parser("config", help="Configure CLI")
+    config_parser.add_argument("-s", "--server", help="Deployment server URL")
+    
+    # Promote command
+    promote_parser = subparsers.add_parser("promote", help="Promote deployment between groups")
+    promote_parser.add_argument("from_group", help="Source group")
+    promote_parser.add_argument("to_group", help="Target group")
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(0)
+    
+    # Execute command
+    try:
+        if args.command == "deploy":
+            cli.deploy(
+                version=args.version,
+                branch=args.branch,
+                message=args.message,
+                group=args.group
+            )
+        
+        elif args.command == "list":
+            cli.list_deployments(limit=args.limit)
+        
+        elif args.command == "rollback":
+            cli.rollback(args.target)
+        
+        elif args.command == "status":
+            cli.status()
+        
+        elif args.command == "logs":
+            cli.logs(robot_id=args.robot, follow=args.follow)
+        
+        elif args.command == "config":
+            cli.configure(server_url=args.server)
+        
+        elif args.command == "promote":
+            cli.promote(args.from_group, args.to_group)
+        
+    except KeyboardInterrupt:
+        print("\n👋 Cancelled")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
