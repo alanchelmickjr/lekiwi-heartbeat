@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""
+LeKiwi Complete CLI - Everything in one tool
+Deploy, SSH, manage robots from anywhere, automatic branch versioning
+"""
+
+import os
+import sys
+import json
+import subprocess
+import argparse
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, Dict, List
+import asyncio
+import websockets
+
+try:
+    import requests
+    from tabulate import tabulate
+    import paramiko
+except ImportError:
+    print("Installing required packages...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "tabulate", "paramiko", "websockets"])
+    import requests
+    from tabulate import tabulate
+    import paramiko
+
+class LeKiwiCompleteCLI:
+    """
+    Complete CLI for LeKiwi fleet management
+    """
+    
+    def __init__(self):
+        self.config_file = Path.home() / ".lekiwi" / "config.json"
+        self.config = self.load_config()
+        self.server_url = self.config.get("server_url", "https://deploy.lekiwi.io")
+        self.tunnel_server = self.config.get("tunnel_server", "wss://deploy.lekiwi.io")
+    
+    def load_config(self) -> Dict:
+        """Load configuration"""
+        if self.config_file.exists():
+            with open(self.config_file, "r") as f:
+                return json.load(f)
+        return {}
+    
+    def save_config(self):
+        """Save configuration"""
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, "w") as f:
+            json.dump(self.config, f, indent=2)
+    
+    def get_branch_version(self) -> Dict:
+        """Get version from current Git branch"""
+        try:
+            # Get branch name
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            
+            # Get short commit hash
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            
+            # Get commit count (build number)
+            count = subprocess.check_output(
+                ["git", "rev-list", "--count", "HEAD"],
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+            
+            # Generate semantic version based on branch
+            if branch in ["main", "master"]:
+                version = f"v1.0.{count}"
+                target = "production"
+            elif branch == "develop":
+                version = f"v0.9.{count}-dev"
+                target = "development"
+            elif branch.startswith("feature/"):
+                feature = branch.replace("feature/", "").replace("/", "-")
+                version = f"v0.1.{count}-{feature}"
+                target = "feature-test"
+            elif branch.startswith("hotfix/"):
+                fix = branch.replace("hotfix/", "").replace("/", "-")
+                version = f"v1.0.{count}-hotfix.{fix}"
+                target = "hotfix-test"
+            elif branch.startswith("release/"):
+                release = branch.replace("release/", "")
+                version = f"v{release}.{count}-rc"
+                target = "staging"
+            else:
+                version = f"v0.0.{count}-{branch.replace('/', '-')}"
+                target = "experimental"
+            
+            # Add commit hash for uniqueness
+            full_version = f"{version}+{commit}"
+            
+            return {
+                "version": full_version,
+                "branch": branch,
+                "commit": commit,
+                "build": count,
+                "target": target
+            }
+            
+        except Exception as e:
+            # Not in a git repo or git not available
+            return {
+                "version": f"v0.0.0+manual.{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                "branch": "unknown",
+                "commit": "unknown",
+                "build": "0",
+                "target": "development"
+            }
+    
+    def deploy(self, version: Optional[str] = None, target: Optional[str] = None, 
+               message: Optional[str] = None, version_lock: bool = False):
+        """
+        Deploy with automatic branch versioning
+        """
+        # Get version from branch if not specified
+        if not version:
+            branch_info = self.get_branch_version()
+            version = branch_info["version"]
+            if not target:
+                target = branch_info["target"]
+            
+            print(f"🌿 Branch: {branch_info['branch']}")
+            print(f"📦 Version: {version}")
+            print(f"🎯 Target: {target}")
+            print("")
+        
+        # Prepare deployment
+        deployment = {
+            "version": version,
+            "target_group": target or "all",
+            "message": message or f"Deployment {version}",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Version-locked deployment (all robots with same version)
+        if version_lock:
+            print(f"🔒 Version-locked deployment")
+            print(f"   All robots on same version will update together")
+            
+            # Get current version distribution
+            response = requests.get(f"{self.server_url}/api/robots/by-version")
+            if response.status_code == 200:
+                versions = response.json()
+                print("\nCurrent version distribution:")
+                for ver, info in versions.items():
+                    print(f"  {ver}: {info['count']} robots")
+            
+            # Deploy to version group
+            endpoint = "/api/deploy/version-locked"
+        else:
+            endpoint = "/api/deploy"
+        
+        # Send deployment
+        print(f"\n🚀 Deploying {version}...")
+        
+        try:
+            response = requests.post(
+                f"{self.server_url}{endpoint}",
+                json=deployment
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            print(f"✅ Deployment initiated: {result.get('deployment_id', 'success')}")
+            
+            if version_lock and "robot_count" in result:
+                print(f"   Deploying to {result['robot_count']} robots")
+            
+        except requests.RequestException as e:
+            print(f"❌ Deployment failed: {e}")
+            sys.exit(1)
+    
+    def ssh(self, robot_id: str, command: Optional[str] = None, interactive: bool = False):
+        """
+        SSH to robot (works from anywhere via reverse tunnel)
+        """
+        print(f"🔐 Connecting to {robot_id}...")
+        
+        if interactive:
+            # Interactive SSH session via WebSocket
+            asyncio.run(self.interactive_ssh(robot_id))
+        else:
+            # Execute single command
+            try:
+                response = requests.post(
+                    f"{self.server_url}/api/ssh/{robot_id}",
+                    json={"command": command or "hostname; uptime; df -h /"}
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                print(f"✅ Connected via reverse tunnel")
+                print(f"   Version: {result.get('version')}")
+                print(f"   Tunnel Port: {result.get('tunnel_port')}")
+                print("\nOutput:")
+                print(result.get("result", {}).get("stdout", ""))
+                
+                if stderr := result.get("result", {}).get("stderr"):
+                    print("\nErrors:")
+                    print(stderr)
+                    
+            except requests.RequestException as e:
+                print(f"❌ SSH failed: {e}")
+                sys.exit(1)
+    
+    async def interactive_ssh(self, robot_id: str):
+        """Interactive SSH session through WebSocket"""
+        try:
+            uri = f"{self.tunnel_server}/ws/ssh/{robot_id}"
+            
+            async with websockets.connect(uri) as websocket:
+                print(f"✅ Interactive session established")
+                print("Type 'exit' to disconnect\n")
+                
+                # Start async tasks for input/output
+                await asyncio.gather(
+                    self.read_input(websocket),
+                    self.read_output(websocket)
+                )
+                
+        except Exception as e:
+            print(f"❌ Interactive SSH failed: {e}")
+    
+    async def read_input(self, websocket):
+        """Read user input and send to robot"""
+        loop = asyncio.get_event_loop()
+        while True:
+            line = await loop.run_in_executor(None, input)
+            if line.lower() == 'exit':
+                break
+            await websocket.send(line + '\n')
+    
+    async def read_output(self, websocket):
+        """Read output from robot and display"""
+        async for message in websocket:
+            print(message, end='')
+    
+    def status(self, by_version: bool = False):
+        """Show fleet status"""
+        
+        if by_version:
+            # Show robots grouped by version
+            try:
+                response = requests.get(f"{self.server_url}/api/robots/by-version")
+                response.raise_for_status()
+                
+                versions = response.json()
+                
+                print("\n📊 Fleet Status by Version")
+                print("=" * 60)
+                
+                for version, info in sorted(versions.items()):
+                    print(f"\n{version}:")
+                    print(f"  Robots: {', '.join(info['robots'][:5])}")
+                    if len(info['robots']) > 5:
+                        print(f"         ... and {len(info['robots']) - 5} more")
+                    print(f"  Total: {info['count']}")
+                    print(f"  Can Deploy: {'✅' if info['can_deploy'] else '❌'}")
+                
+            except requests.RequestException as e:
+                print(f"❌ Failed to get status: {e}")
+        else:
+            # Show all robots
+            try:
+                response = requests.get(f"{self.server_url}/api/robots/online")
+                response.raise_for_status()
+                
+                robots = response.json()
+                
+                if not robots:
+                    print("No robots connected")
+                    return
+                
+                # Format as table
+                table_data = []
+                for robot in robots:
+                    table_data.append([
+                        robot["robot_id"],
+                        robot["version"],
+                        robot["group"],
+                        f":{robot['tunnel_port']}",
+                        robot.get("connected_since", "unknown")[:19]
+                    ])
+                
+                headers = ["Robot ID", "Version", "Group", "Tunnel", "Connected Since"]
+                print("\n🤖 Connected Robots (via reverse tunnel)")
+                print("=" * 80)
+                print(tabulate(table_data, headers=headers, tablefmt="simple"))
+                print(f"\nTotal: {len(robots)} robots connected from anywhere!")
+                
+            except requests.RequestException as e:
+                print(f"❌ Failed to get status: {e}")
+    
+    def rollback(self, target: str, version_lock: bool = False):
+        """Rollback deployment"""
+        
+        if version_lock:
+            print(f"🔒 Version-locked rollback")
+            print(f"   All robots on same version will rollback together")
+        
+        print(f"🔄 Rolling back to: {target}")
+        
+        try:
+            response = requests.post(
+                f"{self.server_url}/api/rollback",
+                json={
+                    "target": target,
+                    "version_lock": version_lock
+                }
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            print(f"✅ Rollback initiated")
+            print(f"   Deployment: {result.get('deployment_id')}")
+            print(f"   Version: {result.get('version')}")
+            
+        except requests.RequestException as e:
+            print(f"❌ Rollback failed: {e}")
+            sys.exit(1)
+    
+    def list_deployments(self, limit: int = 20):
+        """List recent deployments"""
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/deployments",
+                params={"limit": limit}
+            )
+            response.raise_for_status()
+            
+            deployments = response.json()
+            
+            if not deployments:
+                print("No deployments found")
+                return
+            
+            # Format as table
+            table_data = []
+            for dep in deployments:
+                timestamp = dep["timestamp"][:19]
+                branch = dep.get("branch", "unknown")
+                
+                # Show branch indicator
+                if branch in ["main", "master"]:
+                    branch_icon = "🏭"  # Production
+                elif branch == "develop":
+                    branch_icon = "🔧"  # Development
+                elif branch.startswith("feature/"):
+                    branch_icon = "✨"  # Feature
+                elif branch.startswith("hotfix/"):
+                    branch_icon = "🚑"  # Hotfix
+                else:
+                    branch_icon = "🌿"  # Other
+                
+                table_data.append([
+                    dep["id"][:12],
+                    dep["version"],
+                    f"{branch_icon} {branch}",
+                    dep.get("target_group", "all"),
+                    timestamp
+                ])
+            
+            headers = ["ID", "Version", "Branch", "Target", "Time"]
+            print("\n📦 Recent Deployments")
+            print("=" * 80)
+            print(tabulate(table_data, headers=headers, tablefmt="simple"))
+            
+        except requests.RequestException as e:
+            print(f"❌ Failed to list deployments: {e}")
+
+def main():
+    """Main CLI entry point"""
+    
+    cli = LeKiwiCompleteCLI()
+    
+    parser = argparse.ArgumentParser(
+        description="LeKiwi Complete - Deploy, SSH, and manage robots from anywhere",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Deploy current branch (automatic versioning)
+  lekiwi deploy
+  
+  # Deploy with version-locked groups
+  lekiwi deploy --version-lock
+  
+  # SSH to robot (works from anywhere!)
+  lekiwi ssh Lekiwi_A3F2C8
+  lekiwi ssh Lekiwi_A3F2C8 -c "df -h"
+  lekiwi ssh Lekiwi_A3F2C8 --interactive
+  
+  # View status
+  lekiwi status
+  lekiwi status --by-version
+  
+  # Rollback
+  lekiwi rollback v1.0.42
+  lekiwi rollback v1.0.42 --version-lock
+  
+  # List deployments
+  lekiwi list
+
+Branch-based automatic versioning:
+  main/master  → v1.0.X    → production
+  develop      → v0.9.X    → development  
+  feature/foo  → v0.1.X    → feature-test
+  hotfix/bar   → v1.0.X-hf → hotfix-test
+  release/2.0  → v2.0.X-rc → staging
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # Deploy command
+    deploy_parser = subparsers.add_parser("deploy", help="Deploy (auto-version from branch)")
+    deploy_parser.add_argument("-v", "--version", help="Override version")
+    deploy_parser.add_argument("-t", "--target", help="Target group")
+    deploy_parser.add_argument("-m", "--message", help="Deployment message")
+    deploy_parser.add_argument("--version-lock", action="store_true", 
+                              help="Deploy to all robots with same version")
+    
+    # SSH command
+    ssh_parser = subparsers.add_parser("ssh", help="SSH to robot (via reverse tunnel)")
+    ssh_parser.add_argument("robot_id", help="Robot ID")
+    ssh_parser.add_argument("-c", "--command", help="Command to execute")
+    ssh_parser.add_argument("-i", "--interactive", action="store_true", 
+                           help="Interactive session")
+    
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Show fleet status")
+    status_parser.add_argument("--by-version", action="store_true", 
+                              help="Group by version")
+    
+    # Rollback command
+    rollback_parser = subparsers.add_parser("rollback", help="Rollback deployment")
+    rollback_parser.add_argument("target", help="Version or deployment ID")
+    rollback_parser.add_argument("--version-lock", action="store_true",
+                                help="Rollback all robots with same version")
+    
+    # List command
+    list_parser = subparsers.add_parser("list", help="List deployments")
+    list_parser.add_argument("-n", "--limit", type=int, default=20, 
+                            help="Number to show")
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    if not args.command:
+        # No command - show current branch version info
+        info = cli.get_branch_version()
+        print("📍 Current Branch Information")
+        print("=" * 40)
+        print(f"Branch: {info['branch']}")
+        print(f"Version: {info['version']}")
+        print(f"Target: {info['target']}")
+        print(f"Build: #{info['build']}")
+        print(f"Commit: {info['commit']}")
+        print("")
+        print("Run 'lekiwi deploy' to deploy this version")
+        sys.exit(0)
+    
+    # Execute command
+    try:
+        if args.command == "deploy":
+            cli.deploy(
+                version=args.version,
+                target=args.target,
+                message=args.message,
+                version_lock=args.version_lock
+            )
+        
+        elif args.command == "ssh":
+            cli.ssh(
+                robot_id=args.robot_id,
+                command=args.command,
+                interactive=args.interactive
+            )
+        
+        elif args.command == "status":
+            cli.status(by_version=args.by_version)
+        
+        elif args.command == "rollback":
+            cli.rollback(
+                target=args.target,
+                version_lock=args.version_lock
+            )
+        
+        elif args.command == "list":
+            cli.list_deployments(limit=args.limit)
+        
+    except KeyboardInterrupt:
+        print("\n👋 Cancelled")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
