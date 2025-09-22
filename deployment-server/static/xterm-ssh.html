@@ -53,31 +53,82 @@
         term.writeln('Connecting...\r\n');
         
         let commandBuffer = '';
+        let currentDirectory = '/home/lekiwi';  // Track current directory
+        let commandHistory = [];  // Store command history
+        let isExecuting = false;  // Track if command is executing
+        let loadingInterval = null;  // For animated dots
+        
         term.onData(data => {
+            // Ignore input while executing
+            if (isExecuting) {
+                return;
+            }
+            
             if (data === '\r') {
-                // Send command with proper terminal settings
+                // Add to history
+                if (commandBuffer.trim()) {
+                    commandHistory.push(commandBuffer);
+                }
+                
+                // Send command with proper terminal settings and maintain directory state
                 const cols = term.cols || 80;
+                
+                // Check if it's a cd command to update our tracking
+                const cdMatch = commandBuffer.match(/^cd\s*(.*)?$/);
+                let fullCommand = commandBuffer;
+                
+                // Always execute commands in the context of the current directory
+                if (!cdMatch) {
+                    // For non-cd commands, prepend cd to current directory
+                    fullCommand = `cd ${currentDirectory} && ${commandBuffer}`;
+                } else {
+                    // For cd commands, update our tracking after execution
+                    const targetDir = cdMatch[1] || '~';
+                    fullCommand = `cd ${currentDirectory} && cd ${targetDir} && pwd`;
+                }
+                
+                // Show executing indicator
+                isExecuting = true;
+                term.write('\r\n');
+                showLoadingIndicator();
+                
                 fetch('/api/ssh-execute', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         robot_ip: robotIP,
-                        command: `export TERM=xterm-256color && export COLUMNS=${cols} && stty cols ${cols} 2>/dev/null; ${commandBuffer}`
+                        command: `export TERM=xterm-256color && export COLUMNS=${cols} && stty cols ${cols} 2>/dev/null; ${fullCommand}`
                     })
                 }).then(r => r.json()).then(result => {
-                    term.write('\r\n');
-                    if (result.stdout) {
-                        // Process output line by line to handle formatting
-                        const lines = result.stdout.split('\n');
-                        lines.forEach((line, i) => {
-                            term.write(line);
-                            if (i < lines.length - 1) term.write('\r\n');
-                        });
+                    // Clear loading indicator
+                    hideLoadingIndicator();
+                    isExecuting = false;
+                    // If it was a cd command, update current directory
+                    if (cdMatch && result.stdout) {
+                        const newPath = result.stdout.trim();
+                        if (newPath && !result.stderr) {
+                            currentDirectory = newPath;
+                            // Don't show pwd output for cd commands
+                        } else if (result.stderr) {
+                            term.write('\x1b[31m' + result.stderr + '\x1b[0m');
+                        }
+                    } else {
+                        // Normal command output
+                        if (result.stdout) {
+                            const lines = result.stdout.split('\n');
+                            lines.forEach((line, i) => {
+                                term.write(line);
+                                if (i < lines.length - 1) term.write('\r\n');
+                            });
+                        }
+                        if (result.stderr) {
+                            term.write('\x1b[31m' + result.stderr + '\x1b[0m');
+                        }
                     }
-                    if (result.stderr) {
-                        term.write('\x1b[31m' + result.stderr + '\x1b[0m');
-                    }
-                    term.write('\r\nlekiwi@' + robotIP + ':~$ ');
+                    
+                    // Update prompt with current directory
+                    const displayPath = currentDirectory.replace('/home/lekiwi', '~');
+                    term.write('\r\nlekiwi@' + robotIP + ':' + displayPath + '$ ');
                 });
                 commandBuffer = '';
             } else if (data === '\x7f') {
@@ -86,18 +137,134 @@
                     commandBuffer = commandBuffer.slice(0, -1);
                     term.write('\b \b');
                 }
+            } else if (data === '\t') {
+                // Tab key - handle autocomplete
+                handleTabCompletion();
+            } else if (data === '\x1b[A') {
+                // Arrow up - command history
+                // TODO: Implement command history navigation
+            } else if (data === '\x1b[B') {
+                // Arrow down - command history
+                // TODO: Implement command history navigation
             } else {
                 commandBuffer += data;
                 term.write(data);
             }
         });
         
-        // Initial prompt and run initial command to show system info
+        // Handle tab completion
+        function handleTabCompletion() {
+            if (!commandBuffer.trim()) return;
+            
+            const parts = commandBuffer.split(' ');
+            const lastPart = parts[parts.length - 1];
+            const beforeLastPart = commandBuffer.substring(0, commandBuffer.length - lastPart.length);
+            
+            // Determine if we're completing a command or a file/directory
+            const isCommand = parts.length === 1;
+            
+            let completionCommand;
+            if (isCommand) {
+                // Complete command names
+                completionCommand = `compgen -c ${lastPart} | head -10`;
+            } else {
+                // Complete file/directory names in current directory
+                completionCommand = `cd ${currentDirectory} && compgen -f ${lastPart} | head -10`;
+            }
+            
+            // Block tab completion while executing
+            if (isExecuting) return;
+            
+            // Get completions from server
+            isExecuting = true;
+            fetch('/api/ssh-execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    robot_ip: robotIP,
+                    command: completionCommand
+                })
+            }).then(r => r.json()).then(result => {
+                isExecuting = false;
+                if (result.stdout) {
+                    const completions = result.stdout.trim().split('\n').filter(c => c);
+                    
+                    if (completions.length === 0) {
+                        // No completions found - beep or do nothing
+                        term.write('\x07'); // Bell character
+                    } else if (completions.length === 1) {
+                        // Single completion - auto-complete
+                        const completion = completions[0];
+                        const toAdd = completion.substring(lastPart.length);
+                        commandBuffer += toAdd;
+                        term.write(toAdd);
+                        
+                        // Add space if it's a command completion
+                        if (isCommand) {
+                            commandBuffer += ' ';
+                            term.write(' ');
+                        }
+                    } else {
+                        // Multiple completions - show them
+                        term.write('\r\n');
+                        completions.forEach(c => {
+                            term.write(c + '  ');
+                        });
+                        // Redraw the prompt and current command
+                        const displayPath = currentDirectory.replace('/home/lekiwi', '~');
+                        term.write('\r\nlekiwi@' + robotIP + ':' + displayPath + '$ ' + commandBuffer);
+                    }
+                }
+            }).catch(err => {
+                console.error('Tab completion error:', err);
+            });
+        }
+        
+        // Loading indicator functions
+        function showLoadingIndicator() {
+            let dots = 0;
+            const maxDots = 3;
+            
+            // Write initial "Executing"
+            term.write('\x1b[33mExecuting\x1b[0m');
+            
+            // Animate dots
+            loadingInterval = setInterval(() => {
+                // Clear previous dots
+                for (let i = 0; i <= maxDots; i++) {
+                    term.write('\b \b');
+                }
+                
+                // Write new dots
+                dots = (dots + 1) % (maxDots + 1);
+                for (let i = 0; i < dots; i++) {
+                    term.write('.');
+                }
+                
+                // Add spaces for missing dots
+                for (let i = dots; i < maxDots; i++) {
+                    term.write(' ');
+                }
+            }, 500);
+        }
+        
+        function hideLoadingIndicator() {
+            if (loadingInterval) {
+                clearInterval(loadingInterval);
+                loadingInterval = null;
+            }
+            
+            // Clear the entire "Executing..." line
+            term.write('\r\x1b[K');  // Move to start of line and clear it
+        }
+        
+        // Initial prompt
         term.write('lekiwi@' + robotIP + ':~$ ');
         
         // Run initial welcome command with proper terminal settings
         setTimeout(() => {
             const cols = term.cols || 80;
+            isExecuting = true;
             fetch('/api/ssh-execute', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -106,6 +273,7 @@
                     command: `export TERM=xterm-256color && export COLUMNS=${cols} && stty cols ${cols} 2>/dev/null; whoami && hostname && pwd`
                 })
             }).then(r => r.json()).then(result => {
+                isExecuting = false;
                 if (result.stdout) {
                     const lines = result.stdout.split('\n');
                     lines.forEach((line, i) => {
