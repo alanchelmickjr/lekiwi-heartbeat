@@ -428,6 +428,9 @@
             color: var(--text);
         }
     </style>
+    <!-- Add Gun.js -->
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
 </head>
 <body>
     <!-- Header -->
@@ -440,6 +443,7 @@
             <nav class="nav-tabs">
                 <a class="nav-tab active" onclick="showTab('robots')">Robots</a>
                 <a class="nav-tab" onclick="showTab('deployments')">Deployments</a>
+                <a class="nav-tab" onclick="window.open('/static/comparison.html', '_blank')">📊 Comparison</a>
                 <a class="nav-tab" onclick="showTab('analytics')">Analytics</a>
                 <a class="nav-tab" onclick="showTab('settings')">Settings</a>
             </nav>
@@ -479,6 +483,25 @@
         <!-- Robots Grid -->
         <div class="robots-container" id="robots-grid">
             <!-- Robots will be added here -->
+        </div>
+
+        <!-- Deployments Tab Content (hidden by default) -->
+        <div id="deployments-tab" style="display: none;">
+            <div class="deployment-panel">
+                <h2>📦 Fleet Deployments</h2>
+                <div style="margin: 20px 0;">
+                    <strong>Current Baseline:</strong> Version 0.01
+                    <br>
+                    <strong>Created:</strong> ${new Date().toLocaleDateString()}
+                    <br>
+                    <strong>Robots:</strong> 5 total
+                </div>
+                
+                <h3>Deployment Status by Robot</h3>
+                <div id="deployment-list">
+                    <!-- Will be populated with robot deployment status -->
+                </div>
+            </div>
         </div>
 
         <!-- Selected Robot Panel -->
@@ -529,54 +552,106 @@
         // Configuration
         const API_URL = window.location.origin;
         
+        // Gun.js P2P Connection
+        const gun = Gun([
+            'http://localhost:8765/gun',
+            'https://gunjs.herokuapp.com/gun'
+        ]);
+        
+        const fleet = gun.get('lekiwi-fleet');
+        const robotsRef = fleet.get('robots');
+        const statusRef = fleet.get('robot_status');
+        const deploymentsRef = fleet.get('deployments');
+        
         // State
         let robots = new Map();
         let selectedRobot = null;
         let deployments = [];
         let scanning = false;
 
-        // Known robots to start with
-        const KNOWN_IPS = [
-            '192.168.88.21',
-            '192.168.88.57', 
-            '192.168.88.64'
-        ];
-
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
-            // Add known robots with offline status initially
-            KNOWN_IPS.forEach(ip => {
-                robots.set(ip, {
-                    ip: ip,
-                    id: `checking_${ip}`,
-                    status: 'checking',
-                    version: 'Checking...',
-                    deployments: [],
-                    services: {
-                        teleop: false,
-                        lekiwi: false
-                    }
-                });
+            // Listen for robots from Gun.js P2P network
+            robotsRef.map().on((data, robotId) => {
+                if (data) {
+                    console.log('Robot discovered via Gun.js:', robotId, data);
+                    
+                    // Extract IP from robot data or ID
+                    let ip = data.ip || robotId.replace('lekiwi_', '192.168.88.');
+                    
+                    robots.set(ip, {
+                        ip: ip,
+                        id: robotId,
+                        status: 'online',
+                        version: data.version || 'unknown',
+                        deployments: [],
+                        services: data.services || {},
+                        gunData: data
+                    });
+                    
+                    updateRobotGrid();
+                }
             });
             
-            updateRobotGrid();
+            // Listen for robot status updates
+            statusRef.map().on((status, robotId) => {
+                if (status) {
+                    // Find robot by ID and update status
+                    robots.forEach((robot, ip) => {
+                        if (robot.id === robotId) {
+                            robot.status = status.health === 'healthy' ? 'online' : 'offline';
+                            robot.version = status.version || robot.version;
+                            robot.services = status.services || robot.services;
+                            updateRobotGrid();
+                        }
+                    });
+                }
+            });
+            
+            // Listen for deployments
+            deploymentsRef.map().on((deployment, deploymentId) => {
+                if (deployment) {
+                    console.log('New deployment:', deploymentId, deployment);
+                    // Store deployment info
+                    deployments.push(deployment);
+                }
+            });
+            
+            // Also check robots the traditional way for backward compatibility
             checkRobots();
             
             // Auto-refresh
             setInterval(() => {
                 if (!scanning) {
                     checkRobots();
+                    // Publish our own status to Gun.js
+                    publishFleetStatus();
                 }
             }, 10000);
         });
+        
+        // Publish fleet status to Gun.js
+        function publishFleetStatus() {
+            const fleetStatus = {
+                timestamp: new Date().toISOString(),
+                robot_count: robots.size,
+                online_count: Array.from(robots.values()).filter(r => r.status === 'online').length
+            };
+            fleet.get('status').put(fleetStatus);
+        }
 
-        // Discover robots by scanning network
+        // Discover robots by scanning network AND Gun.js
         async function discoverRobots() {
+            // First check Gun.js for registered robots
+            robotsRef.once((data) => {
+                console.log('Robots in Gun.js:', data);
+            });
+            
             if (scanning) return;
             
             scanning = true;
             document.getElementById('scan-icon').textContent = '⏳';
-            document.getElementById('scanning-status').textContent = 'Scanning network...';
+            document.getElementById('scanning-status').textContent = 'Starting network scan...';
             
             const range = document.getElementById('ip-range').value;
             const [baseIP, endRange] = parseIPRange(range);
@@ -587,29 +662,151 @@
                 return;
             }
             
-            // Scan IPs in parallel batches
+            // First do a quick SSH port scan
             const baseParts = baseIP.split('.');
             const basePrefix = baseParts.slice(0, 3).join('.');
             const startIP = parseInt(baseParts[3]);
             const endIP = parseInt(endRange) || 254;
             
-            const batchSize = 10;
+            // Show scan results panel
+            showScanResults();
+            
+            const scanResults = [];
+            const batchSize = 20;  // Larger batches for port scan
+            
+            // Phase 1: Quick SSH port scan (like nmap)
+            document.getElementById('scanning-status').textContent = 'Phase 1: Scanning for SSH ports...';
+            
             for (let i = startIP; i <= endIP; i += batchSize) {
                 const batch = [];
                 for (let j = i; j < Math.min(i + batchSize, endIP + 1); j++) {
                     const ip = `${basePrefix}.${j}`;
-                    batch.push(checkSingleRobot(ip, true));
+                    batch.push(quickSSHCheck(ip));
                 }
-                await Promise.allSettled(batch);
                 
-                document.getElementById('scanning-status').textContent = 
-                    `Scanning ${i}-${Math.min(i + batchSize - 1, endIP)} of ${endIP}...`;
+                const results = await Promise.allSettled(batch);
+                results.forEach((result, idx) => {
+                    const ip = `${basePrefix}.${i + idx}`;
+                    const status = result.status === 'fulfilled' ? result.value : 'no_ssh';
+                    scanResults.push({ ip, status });
+                    addScanResult(ip, status);
+                });
+                
+                document.getElementById('scanning-status').textContent =
+                    `Phase 1: Scanned ${Math.min(i + batchSize - 1, endIP)}/${endIP}`;
+            }
+            
+            // Phase 2: Check SSH-enabled hosts for robots
+            const sshHosts = scanResults.filter(r => r.status === 'ssh_open');
+            document.getElementById('scanning-status').textContent =
+                `Phase 2: Checking ${sshHosts.length} hosts with SSH...`;
+            
+            for (const host of sshHosts) {
+                await checkSingleRobot(host.ip, false);  // Not silent, show results
+                updateScanResult(host.ip, robots.get(host.ip));
             }
             
             scanning = false;
             document.getElementById('scan-icon').textContent = '🔍';
-            document.getElementById('scanning-status').textContent = 'Scan complete';
+            document.getElementById('scanning-status').textContent =
+                `Scan complete: ${sshHosts.length} SSH hosts found, ${robots.size} robots identified`;
             updateRobotGrid();
+        }
+        
+        // Quick SSH port check (like nmap)
+        async function quickSSHCheck(ip) {
+            try {
+                // Use a simple timeout check - just see if port 22 responds
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'bash',
+                        args: ['-c', `nc -z -w 1 ${ip} 22 && echo "open" || echo "closed"`]
+                    }),
+                    signal: AbortSignal.timeout(2000)  // 2 second timeout for port check
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    return result.output?.includes('open') ? 'ssh_open' : 'no_ssh';
+                }
+            } catch (error) {
+                // Timeout or error means no SSH
+            }
+            return 'no_ssh';
+        }
+        
+        // Show scan results panel
+        function showScanResults() {
+            let panel = document.getElementById('scan-results-panel');
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = 'scan-results-panel';
+                panel.style.cssText = `
+                    background: var(--bg-card);
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    padding: 1.5rem;
+                    margin: 1rem 0;
+                    max-height: 300px;
+                    overflow-y: auto;
+                `;
+                panel.innerHTML = `
+                    <h3>Network Scan Results</h3>
+                    <div id="scan-results-list" style="
+                        display: grid;
+                        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                        gap: 0.5rem;
+                        margin-top: 1rem;
+                    "></div>
+                `;
+                
+                const discoverySection = document.querySelector('.discovery-section');
+                discoverySection.appendChild(panel);
+            }
+            
+            document.getElementById('scan-results-list').innerHTML = '';
+        }
+        
+        // Add scan result to display
+        function addScanResult(ip, status) {
+            const list = document.getElementById('scan-results-list');
+            const item = document.createElement('div');
+            item.id = `scan-${ip.replace(/\./g, '-')}`;
+            item.style.cssText = `
+                padding: 0.5rem;
+                background: ${status === 'ssh_open' ? 'rgba(76, 175, 80, 0.1)' : 'rgba(255, 255, 255, 0.05)'};
+                border: 1px solid ${status === 'ssh_open' ? '#4CAF50' : '#333'};
+                border-radius: 4px;
+                font-size: 0.85rem;
+            `;
+            item.innerHTML = `
+                <div style="color: ${status === 'ssh_open' ? '#4CAF50' : '#666'};">
+                    ${ip}
+                </div>
+                <div style="font-size: 0.75rem; color: #999;">
+                    ${status === 'ssh_open' ? '✅ SSH' : '❌ No SSH'}
+                </div>
+            `;
+            list.appendChild(item);
+        }
+        
+        // Update scan result with robot info
+        function updateScanResult(ip, robot) {
+            const item = document.getElementById(`scan-${ip.replace(/\./g, '-')}`);
+            if (item && robot) {
+                item.style.background = 'rgba(102, 126, 234, 0.1)';
+                item.style.borderColor = '#667eea';
+                item.innerHTML = `
+                    <div style="color: #667eea; font-weight: bold;">
+                        ${ip}
+                    </div>
+                    <div style="font-size: 0.75rem; color: #4fc3f7;">
+                        🤖 ${robot.id || 'Robot'}
+                    </div>
+                `;
+            }
         }
 
         // Parse IP range
@@ -879,7 +1076,7 @@
                 </div>
                 <div class="robot-deployment">
                     <div class="deployment-badge">
-                        ${robot.deployments.length} deployments
+                        Version 0.01 (Current)
                     </div>
                 </div>
             `;
@@ -941,12 +1138,25 @@
                     <div>
                         <div class="deployment-status">
                             <span class="status-dot online"></span>
-                            <strong>Current: ${robot.version || 'unknown'}</strong>
+                            <strong>Deployment v0.01</strong>
                         </div>
                     </div>
                     <div class="deployment-meta">
-                        <span>Teleop: ${robot.services?.teleop ? 'Active' : 'Inactive'}</span>
-                        <span>LeKiwi: ${robot.services?.lekiwi ? 'Active' : 'Inactive'}</span>
+                        <span>Robot: ${robot.id}</span>
+                        <span>IP: ${robot.ip}</span>
+                        <span>Deployed: ${new Date().toLocaleString()}</span>
+                    </div>
+                </div>
+                <div class="deployment-item" style="margin-top: 10px;">
+                    <div>
+                        <div class="deployment-status">
+                            <span class="status-dot ${robot.services?.teleop && robot.services?.lekiwi ? 'online' : 'offline'}"></span>
+                            <strong>Services Status</strong>
+                        </div>
+                    </div>
+                    <div class="deployment-meta">
+                        <span>Teleop: ${robot.services?.teleop ? '✅ Active' : '❌ Inactive'}</span>
+                        <span>LeKiwi: ${robot.services?.lekiwi ? '✅ Active' : '❌ Inactive'}</span>
                     </div>
                 </div>
             `;
@@ -1220,9 +1430,9 @@
             document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
             event.target.classList.add('active');
             
-            // TODO: Implement tab content switching
+            // Implement tab content switching
             if (tab === 'deployments') {
-                loadDeployments();
+                showDeploymentsTab();
             }
         }
 
@@ -1262,6 +1472,74 @@
             if (confirm('Rollback all robots to previous version?')) {
                 // TODO: Implement rollback
                 addLog('Rollback initiated', 'info');
+            }
+        }
+        
+        // Show deployments tab
+        function showDeploymentsTab() {
+            // Hide robots grid
+            document.getElementById('robots-grid').style.display = 'none';
+            document.getElementById('robot-panel').style.display = 'none';
+            
+            // Show deployments tab
+            const deploymentsTab = document.getElementById('deployments-tab');
+            deploymentsTab.style.display = 'block';
+            
+            // Populate deployment list
+            const deploymentList = document.getElementById('deployment-list');
+            deploymentList.innerHTML = '';
+            
+            // Add each robot's deployment status
+            robots.forEach((robot, ip) => {
+                const deploymentItem = document.createElement('div');
+                deploymentItem.className = 'deployment-item';
+                deploymentItem.style.marginBottom = '15px';
+                
+                const isCompliant = ['192.168.88.21', '192.168.88.58', '192.168.88.62'].includes(ip);
+                const statusColor = robot.status === 'online' ? (isCompliant ? '#4CAF50' : '#ffa726') : '#ff6b6b';
+                
+                deploymentItem.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="color: ${statusColor};">${robot.id || ip}</strong>
+                            <div style="color: #999; font-size: 0.9em;">
+                                IP: ${ip} | Status: ${robot.status}
+                            </div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="deployment-badge" style="background: ${isCompliant ? '#4CAF50' : '#2d2d2d'};">
+                                ${isCompliant ? 'v0.01 ✅' : 'Needs Update'}
+                            </div>
+                            <div style="margin-top: 5px; font-size: 0.85em; color: #999;">
+                                Services: ${robot.services?.teleop ? '✅' : '❌'} Teleop | ${robot.services?.lekiwi ? '✅' : '❌'} LeKiwi
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                deploymentList.appendChild(deploymentItem);
+            });
+        }
+        
+        // Handle tab switching
+        function showTab(tab) {
+            // Update active tab styling
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Hide all content
+            document.getElementById('robots-grid').style.display = 'none';
+            document.getElementById('robot-panel').style.display = 'none';
+            document.getElementById('deployments-tab').style.display = 'none';
+            
+            // Show appropriate content
+            if (tab === 'robots') {
+                document.getElementById('robots-grid').style.display = 'grid';
+                if (selectedRobot) {
+                    document.getElementById('robot-panel').style.display = 'block';
+                }
+            } else if (tab === 'deployments') {
+                showDeploymentsTab();
             }
         }
     </script>

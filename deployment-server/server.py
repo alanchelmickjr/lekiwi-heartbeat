@@ -24,6 +24,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
+# Import comparison engine
+from comparison_engine import (
+    RobotFileComparison,
+    create_baseline_deployment,
+    compare_robot_deployments,
+    compare_robot_to_baseline
+)
+
 # Configuration
 CONFIG = {
     "server_port": int(os.getenv("DEPLOY_PORT", "8000")),
@@ -587,7 +595,6 @@ async def execute_command(request: Request):
         # Fix paths for deployment scripts
         if command in ["python3", "python"] and args and "deployment-master" in args[0]:
             # Adjust path to be relative to current working directory
-            import os
             script_path = args[0]
             if not os.path.isabs(script_path):
                 # Go up one directory from deployment-server to find deployment-master
@@ -597,7 +604,7 @@ async def execute_command(request: Request):
         full_command = [command] + args
         print(f"Executing: {' '.join(full_command)}")  # Debug logging
         
-        result = subprocess.run(full_command, capture_output=True, text=True, timeout=30, cwd=os.path.dirname(os.path.dirname(__file__)))
+        result = subprocess.run(full_command, capture_output=True, text=True, timeout=5, cwd=os.path.dirname(os.path.dirname(__file__)))
         
         return {
             "success": result.returncode == 0,
@@ -610,6 +617,155 @@ async def execute_command(request: Request):
         raise HTTPException(status_code=408, detail="Command timed out")
     except Exception as e:
         print(f"Error in execute_command: {e}")  # Debug logging
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Comparison API Endpoints
+@app.post("/api/comparison/baseline/create")
+async def create_baseline():
+    """Create baseline version 0.01 from working robots (.21, .58, .62)"""
+    try:
+        print("📊 Creating baseline version 0.01 from working robots...")
+        baseline = create_baseline_deployment()
+        return {
+            "status": "success",
+            "message": "Baseline version 0.01 created successfully",
+            "baseline": {
+                "version": baseline["version"],
+                "created": baseline["created"],
+                "robots": baseline["robots"],
+                "files_count": len(baseline["files"]),
+                "checksums_count": len(baseline["checksums"])
+            }
+        }
+    except Exception as e:
+        print(f"Error creating baseline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/comparison/baseline")
+async def get_baseline():
+    """Get baseline version information"""
+    try:
+        baseline_file = Path("/tmp/robot_comparisons/baseline_v0.01.json")
+        if not baseline_file.exists():
+            raise HTTPException(status_code=404, detail="Baseline not found. Create it first.")
+        
+        with open(baseline_file, 'r') as f:
+            baseline = json.load(f)
+        
+        return {
+            "version": baseline["version"],
+            "created": baseline["created"],
+            "robots": baseline["robots"],
+            "files": list(baseline["files"].keys()),
+            "checksums": list(baseline["checksums"].keys())
+        }
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Baseline not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/comparison/compare")
+async def compare_robots(request: Request):
+    """Compare two robots' deployments"""
+    try:
+        data = await request.json()
+        robot1_ip = data.get("robot1")
+        robot2_ip = data.get("robot2")
+        
+        if not robot1_ip or not robot2_ip:
+            raise HTTPException(status_code=400, detail="Both robot1 and robot2 IPs are required")
+        
+        print(f"🔍 Comparing {robot1_ip} vs {robot2_ip}...")
+        comparison = compare_robot_deployments(robot1_ip, robot2_ip)
+        
+        return {
+            "status": "success",
+            "comparison": {
+                "robot1": comparison["robot1"],
+                "robot2": comparison["robot2"],
+                "timestamp": comparison["timestamp"],
+                "differences_count": len(comparison["differences"]),
+                "identical_files_count": len(comparison["identical_files"]),
+                "robot1_missing_count": len(comparison["missing_files"]["robot1_missing"]),
+                "robot2_missing_count": len(comparison["missing_files"]["robot2_missing"]),
+                "differences": comparison["differences"],
+                "missing_files": comparison["missing_files"],
+                "identical_files": comparison["identical_files"]
+            }
+        }
+    except Exception as e:
+        print(f"Error comparing robots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/comparison/check-compliance")
+async def check_compliance(request: Request):
+    """Check if a robot is compliant with baseline version 0.01"""
+    try:
+        data = await request.json()
+        robot_ip = data.get("robot_ip")
+        
+        if not robot_ip:
+            raise HTTPException(status_code=400, detail="robot_ip is required")
+        
+        print(f"✅ Checking compliance for {robot_ip}...")
+        comparison = compare_robot_to_baseline(robot_ip)
+        
+        return {
+            "status": "success",
+            "robot": comparison["robot"],
+            "baseline_version": comparison["baseline_version"],
+            "compliance_status": comparison["status"],
+            "is_compliant": comparison["status"] == "compliant",
+            "differences_count": len(comparison["differences"]),
+            "missing_files_count": len(comparison["missing_files"]),
+            "differences": comparison["differences"],
+            "missing_files": comparison["missing_files"]
+        }
+    except Exception as e:
+        print(f"Error checking compliance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/comparison/files/{robot_ip}")
+async def get_robot_files(robot_ip: str):
+    """Get cached files from a robot"""
+    try:
+        cache_file = Path(f"/tmp/robot_comparisons/{robot_ip.replace('.', '_')}.json")
+        if not cache_file.exists():
+            # Fetch fresh data
+            engine = RobotFileComparison()
+            robot_data = engine.fetch_robot_files(robot_ip)
+        else:
+            with open(cache_file, 'r') as f:
+                robot_data = json.load(f)
+        
+        return {
+            "robot": robot_ip,
+            "timestamp": robot_data["timestamp"],
+            "files": list(robot_data["files"].keys()),
+            "checksums": robot_data["checksums"],
+            "errors": robot_data.get("errors", [])
+        }
+    except Exception as e:
+        print(f"Error getting robot files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/comparison/refresh/{robot_ip}")
+async def refresh_robot_cache(robot_ip: str):
+    """Refresh cached files for a robot"""
+    try:
+        print(f"🔄 Refreshing cache for {robot_ip}...")
+        engine = RobotFileComparison()
+        robot_data = engine.fetch_robot_files(robot_ip)
+        
+        return {
+            "status": "success",
+            "message": f"Cache refreshed for {robot_ip}",
+            "files_fetched": len(robot_data["files"]),
+            "checksums_fetched": len(robot_data["checksums"]),
+            "errors": robot_data.get("errors", [])
+        }
+    except Exception as e:
+        print(f"Error refreshing cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # WebSocket for real-time updates

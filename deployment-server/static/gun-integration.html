@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LeKiwi Fleet - Gun.js P2P</title>
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+    <style>
+        body { background: #000; color: #e0e0e0; font-family: sans-serif; padding: 20px; }
+        .robot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .robot-card { background: #1a1a1a; border: 1px solid #333; padding: 15px; border-radius: 8px; }
+        .online { color: #4CAF50; }
+        .offline { color: #ff6b6b; }
+        button { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>🤖 LeKiwi Fleet Control - Gun.js P2P</h1>
+    <p>Robots auto-register through Gun.js - No hardcoding needed!</p>
+    
+    <button onclick="scanForRobots()">🔍 Discover Robots via Gun.js</button>
+    
+    <div id="robot-count">Robots: 0</div>
+    <div class="robot-grid" id="robots"></div>
+
+    <script>
+        // Connect to Gun.js P2P network
+        const gun = Gun([
+            'http://localhost:8765/gun',
+            'https://gunjs.herokuapp.com/gun'
+        ]);
+        
+        const fleet = gun.get('lekiwi-fleet');
+        const robotsRef = fleet.get('robots');
+        const statusRef = fleet.get('robot_status');
+        
+        let robots = {};
+        
+        // Listen for robots registering themselves
+        robotsRef.map().on((data, robotId) => {
+            if (data) {
+                console.log('Robot discovered:', robotId, data);
+                robots[robotId] = data;
+                updateDisplay();
+            }
+        });
+        
+        // Listen for robot status updates  
+        statusRef.map().on((status, robotId) => {
+            if (status && robots[robotId]) {
+                robots[robotId].status = status;
+                updateDisplay();
+            }
+        });
+        
+        function scanForRobots() {
+            // Robots auto-register, but we can also actively scan
+            console.log('Scanning Gun.js network for robots...');
+            
+            // Get all robots from Gun.js
+            robotsRef.once((data) => {
+                console.log('Found robots:', data);
+            });
+        }
+        
+        function updateDisplay() {
+            const grid = document.getElementById('robots');
+            const count = document.getElementById('robot-count');
+            
+            count.textContent = `Robots: ${Object.keys(robots).length}`;
+            
+            grid.innerHTML = '';
+            for (const [robotId, robot] of Object.entries(robots)) {
+                const card = document.createElement('div');
+                card.className = 'robot-card';
+                
+                const isOnline = robot.status?.timestamp && 
+                    (Date.now() - new Date(robot.status.timestamp).getTime() < 120000);
+                
+                card.innerHTML = `
+                    <h3>${robotId}</h3>
+                    <div class="${isOnline ? 'online' : 'offline'}">
+                        ${isOnline ? '✅ Online' : '❌ Offline'}
+                    </div>
+                    <div>Version: ${robot.status?.version || 'unknown'}</div>
+                    <div>Group: ${robot.metadata?.group || 'all'}</div>
+                    <div>Last seen: ${robot.status?.timestamp || 'never'}</div>
+                `;
+                
+                grid.appendChild(card);
+            }
+        }
+        
+        // Initial scan
+        scanForRobots();
+    </script>
+</body>
+</html>

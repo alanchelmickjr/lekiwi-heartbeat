@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeKiwi Robot Fleet - Deployment Comparison</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #000;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        
+        .comparison-section {
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 25px;
+            border: 1px solid #333;
+        }
+        
+        .comparison-section h2 {
+            color: #4fc3f7;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+        
+        .comparison-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        
+        .comparison-controls select {
+            background: #000;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            padding: 10px 15px;
+            border-radius: 6px;
+            min-width: 200px;
+            font-size: 14px;
+        }
+        
+        .button {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .button.secondary {
+            background: #2d2d2d;
+            border: 1px solid #444;
+        }
+        
+        .comparison-result {
+            background: #0a0a0a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            border: 1px solid #333;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .comparison-result::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .comparison-result::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+        
+        .comparison-result::-webkit-scrollbar-thumb {
+            background: #444;
+            border-radius: 4px;
+        }
+        
+        .diff-block {
+            background: #111;
+            border-left: 4px solid #ff6b6b;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            border-radius: 4px;
+        }
+        
+        .diff-block.binary {
+            border-left-color: #ffa726;
+        }
+        
+        .compliant {
+            color: #4CAF50;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        
+        .non-compliant {
+            color: #ff6b6b;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            margin: 10px 0;
+        }
+        
+        .status-badge.compliant {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid #4CAF50;
+        }
+        
+        .status-badge.non-compliant {
+            background: rgba(255, 107, 107, 0.2);
+            border: 1px solid #ff6b6b;
+        }
+        
+        .robots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .robot-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .robot-card:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+        }
+        
+        .robot-card.baseline {
+            border-color: #4CAF50;
+            background: linear-gradient(135deg, rgba(76, 175, 80, 0.1), rgba(76, 175, 80, 0.05));
+        }
+        
+        .robot-card h3 {
+            color: #4fc3f7;
+            margin-bottom: 10px;
+        }
+        
+        .robot-info {
+            font-size: 0.9em;
+            color: #999;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #4fc3f7;
+            padding: 20px;
+            font-size: 1.1em;
+        }
+        
+        .error {
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid #ff6b6b;
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+        }
+        
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .stat-card {
+            background: #111;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+            border: 1px solid #333;
+        }
+        
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            color: #999;
+            margin-top: 5px;
+        }
+        
+        pre {
+            background: #0a0a0a;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        
+        .diff-added {
+            color: #4CAF50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+        
+        .diff-removed {
+            color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 LeKiwi Robot Fleet Comparison</h1>
+        <div class="subtitle">Version Control for Robot Deployments - Baseline v0.01</div>
+    </div>
+    
+    <!-- Baseline Management -->
+    <div class="comparison-section">
+        <h2>📊 Baseline Management</h2>
+        
+        <div class="comparison-controls">
+            <select id="baseline-source-select">
+                <option value="">Select Master Robot for Baseline</option>
+                <option value="192.168.88.21">192.168.88.21</option>
+                <option value="192.168.88.57">192.168.88.57</option>
+                <option value="192.168.88.58">192.168.88.58</option>
+                <option value="192.168.88.62">192.168.88.62</option>
+                <option value="192.168.88.64">192.168.88.64</option>
+            </select>
+            
+            <button onclick="createBaselineFromMaster()" class="button">
+                Set as Master Baseline
+            </button>
+            
+            <button onclick="getBaselineInfo()" class="button secondary">
+                View Current Baseline
+            </button>
+        </div>
+        
+        <div id="current-baseline" style="margin-top: 15px; padding: 10px; background: #111; border-radius: 6px;">
+            <strong>Current Master:</strong> <span id="current-master-robot">Not Set</span>
+        </div>
+        
+        <div id="baseline-result" class="comparison-result" style="display: none;">
+            <!-- Baseline info will appear here -->
+        </div>
+    </div>
+    
+    <!-- Robot Comparison -->
+    <div class="comparison-section">
+        <h2>🔍 Compare Robot Deployments</h2>
+        
+        <div class="comparison-controls">
+            <select id="robot1-select">
+                <option value="">Select Robot 1</option>
+                <option value="192.168.88.21">192.168.88.21 (Working)</option>
+                <option value="192.168.88.57">192.168.88.57 (Broken)</option>
+                <option value="192.168.88.58">192.168.88.58 (Working)</option>
+                <option value="192.168.88.62">192.168.88.62 (Working)</option>
+                <option value="192.168.88.64">192.168.88.64 (Broken)</option>
+            </select>
+            
+            <select id="robot2-select">
+                <option value="">Select Robot 2</option>
+                <option value="192.168.88.21">192.168.88.21 (Working)</option>
+                <option value="192.168.88.57">192.168.88.57 (Broken)</option>
+                <option value="192.168.88.58">192.168.88.58 (Working)</option>
+                <option value="192.168.88.62">192.168.88.62 (Working)</option>
+                <option value="192.168.88.64">192.168.88.64 (Broken)</option>
+            </select>
+            
+            <button onclick="compareRobots()" class="button">
+                Compare Robots
+            </button>
+        </div>
+        
+        <div id="compare-result" class="comparison-result" style="display: none;">
+            <!-- Comparison results will appear here -->
+        </div>
+    </div>
+    
+    <!-- Compliance Check -->
+    <div class="comparison-section">
+        <h2>✅ Baseline Compliance Check</h2>
+        
+        <div class="comparison-controls">
+            <select id="compliance-robot-select">
+                <option value="">Select Robot to Check</option>
+                <option value="192.168.88.21">192.168.88.21</option>
+                <option value="192.168.88.57">192.168.88.57</option>
+                <option value="192.168.88.58">192.168.88.58</option>
+                <option value="192.168.88.62">192.168.88.62</option>
+                <option value="192.168.88.64">192.168.88.64</option>
+            </select>
+            
+            <button onclick="checkCompliance()" class="button">
+                Check Compliance
+            </button>
+            
+            <button onclick="checkAllCompliance()" class="button secondary">
+                Check All Robots
+            </button>
+        </div>
+        
+        <div id="compliance-result" class="comparison-result" style="display: none;">
+            <!-- Compliance results will appear here -->
+        </div>
+    </div>
+    
+    <!-- Fleet Overview -->
+    <div class="comparison-section">
+        <h2>🚀 Fleet Overview</h2>
+        <div id="fleet-overview" class="robots-grid">
+            <!-- Robot cards will be added here -->
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+        let currentMasterRobot = localStorage.getItem('masterRobot') || null;
+        
+        // Update display on load
+        if (currentMasterRobot) {
+            document.getElementById('current-master-robot').textContent = currentMasterRobot;
+        }
+        
+        // Create baseline from selected master robot
+        async function createBaselineFromMaster() {
+            const masterRobot = document.getElementById('baseline-source-select').value;
+            
+            if (!masterRobot) {
+                alert('Please select a robot to use as the master baseline');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('baseline-result');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="loading">Setting ${masterRobot} as master baseline...</div>`;
+            
+            try {
+                // Fetch files from the master robot
+                const response = await fetch(`${API_URL}/api/comparison/baseline/create-from-single`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        master_robot: masterRobot,
+                        version: '0.01'
+                    })
+                });
+                
+                // If endpoint doesn't exist, use the regular endpoint with single robot
+                if (!response.ok && response.status === 404) {
+                    // Use existing endpoint but with single robot
+                    const fallbackResponse = await fetch(`${API_URL}/api/comparison/baseline/create`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            robots: [masterRobot]  // Only use the selected master
+                        })
+                    });
+                    
+                    if (fallbackResponse.ok) {
+                        const data = await fallbackResponse.json();
+                        handleBaselineSuccess(data, masterRobot);
+                        return;
+                    }
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'success' || response.ok) {
+                    handleBaselineSuccess(data, masterRobot);
+                } else {
+                    throw new Error(data.detail || 'Failed to create baseline');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        }
+        
+        function handleBaselineSuccess(data, masterRobot) {
+            const resultDiv = document.getElementById('baseline-result');
+            
+            // Save master robot
+            localStorage.setItem('masterRobot', masterRobot);
+            currentMasterRobot = masterRobot;
+            document.getElementById('current-master-robot').textContent = masterRobot;
+            
+            resultDiv.innerHTML = `
+                <div class="status-badge compliant">✅ Master Baseline Set Successfully</div>
+                <div class="summary-stats">
+                    <div class="stat-card">
+                        <div class="stat-value">${masterRobot.split('.').pop()}</div>
+                        <div class="stat-label">Master Robot</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">0.01</div>
+                        <div class="stat-label">Version</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.baseline?.files_count || 7}</div>
+                        <div class="stat-label">Config Files</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.baseline?.checksums_count || 10}</div>
+                        <div class="stat-label">Binary Files</div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <strong>Master Robot:</strong> ${masterRobot}<br>
+                    <strong>Created:</strong> ${new Date().toLocaleString()}<br>
+                    <strong>Status:</strong> All other robots will be compared against this master
+                </div>
+            `;
+        }
+        
+        // Get baseline info
+        async function getBaselineInfo() {
+            const resultDiv = document.getElementById('baseline-result');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<div class="loading">Loading baseline information...</div>';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/comparison/baseline`);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        resultDiv.innerHTML = '<div class="error">No baseline found. Please create one first.</div>';
+                        return;
+                    }
+                    throw new Error('Failed to fetch baseline');
+                }
+                
+                const data = await response.json();
+                resultDiv.innerHTML = `
+                    <h3>Baseline Version ${data.version}</h3>
+                    <div style="margin: 15px 0;">
+                        <strong>Created:</strong> ${new Date(data.created).toLocaleString()}<br>
+                        <strong>Source Robots:</strong> ${data.robots.join(', ')}
+                    </div>
+                    <h4>Tracked Files:</h4>
+                    <pre>${data.files.join('\n')}</pre>
+                    <h4>Binary Files (checksums only):</h4>
+                    <pre>${data.checksums.filter(f => !data.files.includes(f)).join('\n')}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        }
+        
+        // Compare two robots
+        async function compareRobots() {
+            const robot1 = document.getElementById('robot1-select').value;
+            const robot2 = document.getElementById('robot2-select').value;
+            
+            if (!robot1 || !robot2) {
+                alert('Please select both robots to compare');
+                return;
+            }
+            
+            if (robot1 === robot2) {
+                alert('Please select different robots to compare');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('compare-result');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = `<div class="loading">Comparing ${robot1} vs ${robot2}...</div>`;
+            
+            try {
+                const response = await fetch(`${API_URL}/api/comparison/compare`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ robot1, robot2 })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    let html = `
+                        <h3>Comparison: ${robot1} vs ${robot2}</h3>
+                        <div class="summary-stats">
+                            <div class="stat-card">
+                                <div class="stat-value">${data.comparison.differences_count}</div>
+                                <div class="stat-label">Differences</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${data.comparison.identical_files_count}</div>
+                                <div class="stat-label">Identical Files</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${data.comparison.robot1_missing_count}</div>
+                                <div class="stat-label">Missing in ${robot1.split('.').pop()}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${data.comparison.robot2_missing_count}</div>
+                                <div class="stat-label">Missing in ${robot2.split('.').pop()}</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    if (data.comparison.differences.length > 0) {
+                        html += '<h4>File Differences:</h4>';
+                        data.comparison.differences.forEach(diff => {
+                            const blockClass = diff.type === 'binary' ? 'binary' : '';
+                            html += `<div class="diff-block ${blockClass}">`;
+                            html += `<strong>📄 ${diff.file}</strong>\n`;
+                            if (diff.type === 'content') {
+                                // Color the diff output
+                                const coloredDiff = diff.diff
+                                    .split('\n')
+                                    .map(line => {
+                                        if (line.startsWith('+') && !line.startsWith('+++')) {
+                                            return `<span class="diff-added">${escapeHtml(line)}</span>`;
+                                        } else if (line.startsWith('-') && !line.startsWith('---')) {
+                                            return `<span class="diff-removed">${escapeHtml(line)}</span>`;
+                                        }
+                                        return escapeHtml(line);
+                                    })
+                                    .join('\n');
+                                html += coloredDiff;
+                            } else {
+                                html += `\n🔒 Binary file - checksums differ\n`;
+                                html += `${robot1}: ${diff.checksum1}\n`;
+                                html += `${robot2}: ${diff.checksum2}`;
+                            }
+                            html += `</div>`;
+                        });
+                    }
+                    
+                    if (data.comparison.missing_files.robot1_missing.length > 0) {
+                        html += `<h4>Missing in ${robot1}:</h4>`;
+                        html += '<ul>';
+                        data.comparison.missing_files.robot1_missing.forEach(file => {
+                            html += `<li>❌ ${file}</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    
+                    if (data.comparison.missing_files.robot2_missing.length > 0) {
+                        html += `<h4>Missing in ${robot2}:</h4>`;
+                        html += '<ul>';
+                        data.comparison.missing_files.robot2_missing.forEach(file => {
+                            html += `<li>❌ ${file}</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    
+                    resultDiv.innerHTML = html;
+                } else {
+                    throw new Error(data.detail || 'Comparison failed');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        }
+        
+        // Check compliance
+        async function checkCompliance() {
+            const robot = document.getElementById('compliance-robot-select').value;
+            
+            if (!robot) {
+                alert('Please select a robot to check compliance');
+                return;
+            }
+            
+            const resultDiv = document.getElementById('compliance-result');
+            resultDiv.style.display = 'block';
+            
+            if (!currentMasterRobot) {
+                resultDiv.innerHTML = '<div class="error">Please set a master robot baseline first</div>';
+                return;
+            }
+            
+            resultDiv.innerHTML = `<div class="loading">Checking compliance against master ${currentMasterRobot}...</div>`;
+            
+            try {
+                const response = await fetch(`${API_URL}/api/comparison/check-compliance`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ robot_ip: robot })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    const statusClass = data.is_compliant ? 'compliant' : 'non-compliant';
+                    const statusBadgeClass = data.is_compliant ? 'compliant' : 'non-compliant';
+                    const statusIcon = data.is_compliant ? '✅' : '❌';
+                    const statusText = data.is_compliant ? 'COMPLIANT' : 'NON-COMPLIANT';
+                    
+                    let html = `
+                        <h3>Baseline Compliance Check: ${robot}</h3>
+                        <div class="status-badge ${statusBadgeClass}">
+                            ${statusIcon} Status: ${statusText} with Version ${data.baseline_version}
+                        </div>
+                        <div class="summary-stats">
+                            <div class="stat-card">
+                                <div class="stat-value">${data.differences_count}</div>
+                                <div class="stat-label">Differences</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-value">${data.missing_files_count}</div>
+                                <div class="stat-label">Missing Files</div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    if (data.differences.length > 0) {
+                        html += '<h4>File Differences from Baseline:</h4>';
+                        data.differences.forEach(diff => {
+                            html += `<div class="diff-block">`;
+                            html += `<strong>📄 ${diff.file}</strong>\n`;
+                            if (diff.diff) {
+                                const coloredDiff = diff.diff
+                                    .split('\n')
+                                    .map(line => {
+                                        if (line.startsWith('+') && !line.startsWith('+++')) {
+                                            return `<span class="diff-added">${escapeHtml(line)}</span>`;
+                                        } else if (line.startsWith('-') && !line.startsWith('---')) {
+                                            return `<span class="diff-removed">${escapeHtml(line)}</span>`;
+                                        }
+                                        return escapeHtml(line);
+                                    })
+                                    .join('\n');
+                                html += coloredDiff;
+                            } else {
+                                html += `\n🔒 Binary file - checksums differ\n`;
+                                html += `Baseline: ${diff.baseline_checksum}\n`;
+                                html += `Robot: ${diff.robot_checksum}`;
+                            }
+                            html += `</div>`;
+                        });
+                    }
+                    
+                    if (data.missing_files.length > 0) {
+                        html += '<h4>Missing Files:</h4>';
+                        html += '<ul>';
+                        data.missing_files.forEach(file => {
+                            html += `<li>❌ ${file}</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    
+                    resultDiv.innerHTML = html;
+                } else {
+                    throw new Error(data.detail || 'Compliance check failed');
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        }
+        
+        // Check all robots compliance
+        async function checkAllCompliance() {
+            const robots = [
+                '192.168.88.21',
+                '192.168.88.57',
+                '192.168.88.58',
+                '192.168.88.62',
+                '192.168.88.64'
+            ];
+            
+            const resultDiv = document.getElementById('compliance-result');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '<div class="loading">Checking compliance for all robots...</div>';
+            
+            let html = '<h3>Fleet Compliance Report</h3>';
+            let compliantCount = 0;
+            let nonCompliantCount = 0;
+            
+            for (const robot of robots) {
+                try {
+                    const response = await fetch(`${API_URL}/api/comparison/check-compliance`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ robot_ip: robot })
+                    });
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        if (data.is_compliant) {
+                            compliantCount++;
+                            html += `<div style="margin: 10px 0;">✅ ${robot}: COMPLIANT</div>`;
+                        } else {
+                            nonCompliantCount++;
+                            html += `<div style="margin: 10px 0;">❌ ${robot}: NON-COMPLIANT (${data.differences_count} differences, ${data.missing_files_count} missing)</div>`;
+                        }
+                    }
+                } catch (error) {
+                    html += `<div style="margin: 10px 0;">⚠️ ${robot}: Error checking</div>`;
+                }
+            }
+            
+            html = `
+                <div class="summary-stats">
+                    <div class="stat-card">
+                        <div class="stat-value" style="color: #4CAF50;">${compliantCount}</div>
+                        <div class="stat-label">Compliant</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" style="color: #ff6b6b;">${nonCompliantCount}</div>
+                        <div class="stat-label">Non-Compliant</div>
+                    </div>
+                </div>
+            ` + html;
+            
+            resultDiv.innerHTML = html;
+            updateFleetOverview(robots);
+        }
+        
+        // Update fleet overview
+        async function updateFleetOverview(robots) {
+            const overviewDiv = document.getElementById('fleet-overview');
+            overviewDiv.innerHTML = '';
+            
+            for (const robot of robots) {
+                const card = document.createElement('div');
+                card.className = 'robot-card';
+                
+                // Check if this is a baseline robot
+                if (['192.168.88.21', '192.168.88.58', '192.168.88.62'].includes(robot)) {
+                    card.classList.add('baseline');
+                }
+                
+                card.innerHTML = `
+                    <h3>${robot}</h3>
+                    <div class="robot-info">
+                        <div>Checking status...</div>
+                    </div>
+                `;
+                overviewDiv.appendChild(card);
+                
+                // Check compliance async
+                fetch(`${API_URL}/api/comparison/check-compliance`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ robot_ip: robot })
+                }).then(response => response.json()).then(data => {
+                    if (data.status === 'success') {
+                        const statusIcon = data.is_compliant ? '✅' : '❌';
+                        const statusText = data.is_compliant ? 'Compliant' : 'Non-Compliant';
+                        const statusColor = data.is_compliant ? '#4CAF50' : '#ff6b6b';
+                        
+                        card.querySelector('.robot-info').innerHTML = `
+                            <div style="color: ${statusColor}; font-weight: bold;">
+                                ${statusIcon} ${statusText}
+                            </div>
+                            <div style="margin-top: 5px;">
+                                <small>Differences: ${data.differences_count}</small><br>
+                                <small>Missing: ${data.missing_files_count}</small>
+                            </div>
+                        `;
+                    }
+                }).catch(error => {
+                    card.querySelector('.robot-info').innerHTML = '<div style="color: #ffa726;">⚠️ Error checking</div>';
+                });
+            }
+        }
+        
+        // Escape HTML for safety
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+        
+        // Initialize on load
+        window.addEventListener('DOMContentLoaded', () => {
+            // Check if baseline exists
+            getBaselineInfo();
+            
+            // Initialize fleet overview
+            updateFleetOverview([
+                '192.168.88.21',
+                '192.168.88.57',
+                '192.168.88.58',
+                '192.168.88.62',
+                '192.168.88.64'
+            ]);
+        });
+    </script>
+</body>
+</html>
