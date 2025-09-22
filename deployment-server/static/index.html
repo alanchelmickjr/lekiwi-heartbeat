@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeKiwi Deploy - Vercel for Robots</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #0070f3;
+            --primary-dark: #0051cc;
+            --success: #0cce6b;
+            --warning: #ffa400;
+            --danger: #ff4e42;
+            --bg: #000000;
+            --bg-lighter: #111111;
+            --bg-card: #0a0a0a;
+            --border: #333333;
+            --text: #ffffff;
+            --text-secondary: #888888;
+            --gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        /* Header - Vercel Style */
+        .header {
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.8);
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.3rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .nav-tabs {
+            display: flex;
+            gap: 2rem;
+        }
+
+        .nav-tab {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            padding: 0.5rem 0;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .nav-tab:hover, .nav-tab.active {
+            color: var(--text);
+            border-bottom-color: var(--primary);
+        }
+
+        /* Main Layout */
+        .main-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Discovery Section */
+        .discovery-section {
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+
+        .discovery-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .discovery-input {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 0.5rem;
+            flex: 1;
+        }
+
+        .form-input {
+            background: var(--bg-lighter);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.7rem 1rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            flex: 1;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 1px var(--primary);
+        }
+
+        /* Robot Cards - Vercel Project Style */
+        .robots-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .robot-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .robot-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 112, 243, 0.1);
+        }
+
+        .robot-card.selected {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 1px var(--primary);
+        }
+
+        .robot-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+        }
+
+        .robot-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .robot-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.2rem 0.6rem;
+            background: var(--bg-lighter);
+            border-radius: 100px;
+            font-size: 0.8rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.online { background: var(--success); }
+        .status-dot.offline { background: var(--danger); }
+        .status-dot.deploying { background: var(--warning); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .robot-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .robot-deployment {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .deployment-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.3rem 0.8rem;
+            background: var(--bg-lighter);
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+
+        /* Deployment Panel - Vercel Style */
+        .deployment-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .deployment-list {
+            margin-top: 1rem;
+        }
+
+        .deployment-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background: var(--bg-lighter);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 0.8rem;
+            transition: all 0.3s ease;
+        }
+
+        .deployment-item:hover {
+            border-color: var(--primary);
+            background: rgba(0, 112, 243, 0.05);
+        }
+
+        .deployment-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .deployment-meta {
+            display: flex;
+            gap: 2rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        /* Buttons */
+        .btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.7rem 1.2rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-ghost:hover {
+            background: var(--bg-lighter);
+            color: var(--text);
+            border-color: var(--text-secondary);
+        }
+
+        .btn-small {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.85rem;
+        }
+
+        .btn-danger {
+            background: transparent;
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+
+        .btn-danger:hover {
+            background: var(--danger);
+            color: white;
+        }
+
+        /* Quick Deploy Bar */
+        .quick-deploy {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--bg-lighter);
+            border-top: 1px solid var(--border);
+            padding: 1rem 2rem;
+            backdrop-filter: blur(10px);
+            background: rgba(17, 17, 17, 0.9);
+        }
+
+        .quick-deploy-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .quick-deploy-form {
+            display: flex;
+            gap: 1rem;
+            flex: 1;
+        }
+
+        /* Loading States */
+        .spinner {
+            border: 2px solid var(--border);
+            border-top: 2px solid var(--primary);
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Logs */
+        .log-viewer {
+            background: #000;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 0.85rem;
+            height: 200px;
+            overflow-y: auto;
+            margin-top: 1rem;
+        }
+
+        .log-entry {
+            margin-bottom: 0.2rem;
+            color: var(--text-secondary);
+        }
+
+        .log-entry.error { color: var(--danger); }
+        .log-entry.success { color: var(--success); }
+        .log-entry.info { color: var(--primary); }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 2rem;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .modal-close:hover {
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <span>🚀</span>
+                <span>LeKiwi Deploy</span>
+            </div>
+            <nav class="nav-tabs">
+                <a class="nav-tab active" onclick="showTab('robots')">Robots</a>
+                <a class="nav-tab" onclick="showTab('deployments')">Deployments</a>
+                <a class="nav-tab" onclick="showTab('analytics')">Analytics</a>
+                <a class="nav-tab" onclick="showTab('settings')">Settings</a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="main-container">
+        <!-- Discovery Section -->
+        <div class="discovery-section">
+            <div class="discovery-header">
+                <div>
+                    <h2>Robot Fleet Discovery</h2>
+                    <p style="color: var(--text-secondary); margin-top: 0.5rem;">
+                        <span id="robot-count">0</span> robots found • 
+                        <span id="online-count">0</span> online • 
+                        <span id="scanning-status">Ready to scan</span>
+                    </p>
+                </div>
+                <button class="btn" onclick="discoverRobots()">
+                    <span id="scan-icon">🔍</span>
+                    Discover Robots
+                </button>
+            </div>
+            <div class="discovery-input">
+                <div class="input-group">
+                    <input type="text" class="form-input" id="ip-range" placeholder="IP Range (e.g., 192.168.88.1-254)" value="192.168.88.1-254">
+                    <button class="btn btn-ghost" onclick="scanRange()">Scan Range</button>
+                </div>
+                <div class="input-group">
+                    <input type="text" class="form-input" id="single-ip" placeholder="Add single IP">
+                    <button class="btn btn-ghost" onclick="addRobot()">Add Robot</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Robots Grid -->
+        <div class="robots-container" id="robots-grid">
+            <!-- Robots will be added here -->
+        </div>
+
+        <!-- Selected Robot Panel -->
+        <div class="deployment-panel" id="robot-panel" style="display: none;">
+            <h3 id="selected-robot-name">Robot Details</h3>
+            <div class="deployment-list" id="robot-deployments">
+                <!-- Deployments for selected robot -->
+            </div>
+            <div class="log-viewer" id="robot-logs">
+                <!-- Logs for selected robot -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Deploy Bar -->
+    <div class="quick-deploy">
+        <div class="quick-deploy-content">
+            <div class="quick-deploy-form">
+                <input type="text" class="form-input" id="deploy-version" placeholder="Version (e.g., v2.1.0)">
+                <select class="form-input" id="deploy-target" style="max-width: 200px;">
+                    <option value="all">All Robots</option>
+                    <option value="selected">Selected Robot</option>
+                    <option value="group">Group</option>
+                </select>
+                <button class="btn" onclick="quickDeploy()">Deploy</button>
+            </div>
+            <div style="display: flex; gap: 1rem;">
+                <button class="btn btn-ghost btn-small" onclick="rollbackAll()">↩️ Rollback All</button>
+                <button class="btn btn-ghost btn-small" onclick="refreshAll()">🔄 Refresh</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal" id="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">Title</h2>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div id="modal-body">
+                Content
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_URL = window.location.origin;
+        
+        // State
+        let robots = new Map();
+        let selectedRobot = null;
+        let deployments = [];
+        let scanning = false;
+
+        // Known robots to start with
+        const KNOWN_IPS = [
+            '192.168.88.21',
+            '192.168.88.57', 
+            '192.168.88.64'
+        ];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            // Add known robots with offline status initially
+            KNOWN_IPS.forEach(ip => {
+                robots.set(ip, {
+                    ip: ip,
+                    id: `checking_${ip}`,
+                    status: 'checking',
+                    version: 'Checking...',
+                    deployments: [],
+                    services: {
+                        teleop: false,
+                        lekiwi: false
+                    }
+                });
+            });
+            
+            updateRobotGrid();
+            checkRobots();
+            
+            // Auto-refresh
+            setInterval(() => {
+                if (!scanning) {
+                    checkRobots();
+                }
+            }, 10000);
+        });
+
+        // Discover robots by scanning network
+        async function discoverRobots() {
+            if (scanning) return;
+            
+            scanning = true;
+            document.getElementById('scan-icon').textContent = '⏳';
+            document.getElementById('scanning-status').textContent = 'Scanning network...';
+            
+            const range = document.getElementById('ip-range').value;
+            const [baseIP, endRange] = parseIPRange(range);
+            
+            if (!baseIP) {
+                alert('Invalid IP range');
+                scanning = false;
+                return;
+            }
+            
+            // Scan IPs in parallel batches
+            const baseParts = baseIP.split('.');
+            const basePrefix = baseParts.slice(0, 3).join('.');
+            const startIP = parseInt(baseParts[3]);
+            const endIP = parseInt(endRange) || 254;
+            
+            const batchSize = 10;
+            for (let i = startIP; i <= endIP; i += batchSize) {
+                const batch = [];
+                for (let j = i; j < Math.min(i + batchSize, endIP + 1); j++) {
+                    const ip = `${basePrefix}.${j}`;
+                    batch.push(checkSingleRobot(ip, true));
+                }
+                await Promise.allSettled(batch);
+                
+                document.getElementById('scanning-status').textContent = 
+                    `Scanning ${i}-${Math.min(i + batchSize - 1, endIP)} of ${endIP}...`;
+            }
+            
+            scanning = false;
+            document.getElementById('scan-icon').textContent = '🔍';
+            document.getElementById('scanning-status').textContent = 'Scan complete';
+            updateRobotGrid();
+        }
+
+        // Parse IP range
+        function parseIPRange(range) {
+            const match = range.match(/^(\d+\.\d+\.\d+\.\d+)-(\d+)$/);
+            if (match) {
+                return [match[1], match[2]];
+            }
+            return [null, null];
+        }
+
+        // Check single robot
+        async function checkSingleRobot(ip, silent = false) {
+            try {
+                // Use the Python script through the API
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'python3',
+                        args: ['deployment-master/lekiwi-master-deploy.py', ip, '--action', 'check']
+                    }),
+                    signal: AbortSignal.timeout(10000)  // Increased timeout
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    
+                    // Check if there's an error in the result
+                    if (result.error) {
+                        // Handle different types of errors
+                        if (result.error.includes('REMOTE HOST IDENTIFICATION HAS CHANGED')) {
+                            if (!silent) {
+                                addLog(`⚠️ SSH key changed for ${ip}, fixing...`, 'warning');
+                            }
+                            await fixSSHKey(ip);
+                            return await checkSingleRobot(ip, silent);
+                        } else if (result.error.includes('Permission denied') ||
+                                   result.error.includes('Connection refused') ||
+                                   result.error.includes('No route to host')) {
+                            // Robot is not accessible
+                            const robot = {
+                                ip: ip,
+                                id: `unreachable_${ip}`,
+                                status: 'offline',
+                                version: 'N/A',
+                                deployments: [],
+                                services: {
+                                    teleop: false,
+                                    lekiwi: false
+                                }
+                            };
+                            robots.set(ip, robot);
+                            if (!silent) {
+                                addLog(`❌ Cannot connect to ${ip}`, 'error');
+                            }
+                            return robot;
+                        } else {
+                            // Other error - robot may not be configured
+                            const robot = {
+                                ip: ip,
+                                id: `error_${ip}`,
+                                status: 'error',
+                                version: 'Error',
+                                deployments: [],
+                                services: {
+                                    teleop: false,
+                                    lekiwi: false
+                                }
+                            };
+                            robots.set(ip, robot);
+                            if (!silent) {
+                                addLog(`⚠️ Error with ${ip}: ${result.error.substring(0, 50)}...`, 'warning');
+                            }
+                            return robot;
+                        }
+                    }
+                    
+                    // Only proceed if we have actual output and it's successful
+                    if (result.success && result.output) {
+                        const output = result.output;
+                        const deviceMatch = output.match(/Device ID: (lekiwi_\w+)/);
+                        const versionMatch = output.match(/Version: ([\w\.]+)/);
+                        
+                        if (deviceMatch || output.includes('Getting device information')) {
+                            // Parse all installation statuses from the check output
+                            const robot = {
+                                ip: ip,
+                                id: deviceMatch ? deviceMatch[1] : `checking_${ip}`,
+                                status: 'online',
+                                version: versionMatch ? versionMatch[1] : 'unknown',
+                                deployments: [],
+                                services: {
+                                    teleop: output.includes('teleop service: active'),
+                                    lekiwi: output.includes('lekiwi service: active')
+                                },
+                                installed: {
+                                    teleop: output.includes('✓ teleop: installed'),
+                                    lerobot: output.includes('✓ lerobot: installed'),
+                                    lekiwi: output.includes('✓ lekiwi: installed'),
+                                    conda: output.includes('✓ Conda environment:') && (output.includes('exists') || output.includes('found'))
+                                },
+                                rawOutput: output  // Store full output for detailed display
+                            };
+                            
+                            // Mark as partial if missing key components
+                            if (!robot.installed.lekiwi || !robot.installed.conda) {
+                                robot.status = 'partial';
+                            }
+                            
+                            robots.set(ip, robot);
+                            
+                            if (!silent) {
+                                const statusText = robot.status === 'partial' ? 'partially configured' : 'fully configured';
+                                addLog(`✅ Found robot: ${robot.id} at ${ip} - ${statusText}`, 'success');
+                            }
+                            
+                            return robot;
+                        } else {
+                            // No device info in output - not properly configured
+                            const robot = {
+                                ip: ip,
+                                id: `unconfigured_${ip}`,
+                                status: 'unconfigured',
+                                version: 'Not Setup',
+                                deployments: [],
+                                services: {
+                                    teleop: false,
+                                    lekiwi: false
+                                }
+                            };
+                            robots.set(ip, robot);
+                            if (!silent) {
+                                addLog(`⚠️ Robot at ${ip} not configured`, 'warning');
+                            }
+                            return robot;
+                        }
+                    } else {
+                        // No output or not successful
+                        const robot = {
+                            ip: ip,
+                            id: `unknown_${ip}`,
+                            status: 'unknown',
+                            version: 'Unknown',
+                            deployments: [],
+                            services: {
+                                teleop: false,
+                                lekiwi: false
+                            }
+                        };
+                        robots.set(ip, robot);
+                        return robot;
+                    }
+                } else {
+                    // HTTP request failed
+                    const robot = {
+                        ip: ip,
+                        id: `failed_${ip}`,
+                        status: 'offline',
+                        version: 'N/A',
+                        deployments: [],
+                        services: {
+                            teleop: false,
+                            lekiwi: false
+                        }
+                    };
+                    robots.set(ip, robot);
+                    if (!silent) {
+                        addLog(`❌ Failed to check ${ip}`, 'error');
+                    }
+                    return robot;
+                }
+            } catch (error) {
+                // Robot not responding or error
+                if (!silent) {
+                    console.log(`No robot at ${ip}`);
+                }
+            }
+            
+            return null;
+        }
+
+        // Check all known robots
+        async function checkRobots() {
+            const promises = Array.from(robots.keys()).map(ip => checkSingleRobot(ip, true));
+            await Promise.allSettled(promises);
+            updateRobotGrid();
+        }
+
+        // Add single robot
+        async function addRobot() {
+            const ip = document.getElementById('single-ip').value.trim();
+            if (!ip) return;
+            
+            const robot = await checkSingleRobot(ip);
+            if (robot) {
+                updateRobotGrid();
+                document.getElementById('single-ip').value = '';
+                addLog(`Added robot at ${ip}`, 'success');
+            } else {
+                addLog(`No robot found at ${ip}`, 'error');
+            }
+        }
+
+        // Update robot grid display
+        function updateRobotGrid() {
+            const grid = document.getElementById('robots-grid');
+            grid.innerHTML = '';
+            
+            let onlineCount = 0;
+            
+            robots.forEach((robot, ip) => {
+                const card = createRobotCard(robot);
+                grid.appendChild(card);
+                
+                if (robot.status === 'online') {
+                    onlineCount++;
+                }
+            });
+            
+            document.getElementById('robot-count').textContent = robots.size;
+            document.getElementById('online-count').textContent = onlineCount;
+        }
+
+        // Create robot card
+        function createRobotCard(robot) {
+            const card = document.createElement('div');
+            card.className = 'robot-card';
+            if (selectedRobot === robot.ip) {
+                card.classList.add('selected');
+            }
+            
+            const statusClass = robot.status === 'online' ? 'online' :
+                               robot.status === 'partial' ? 'deploying' :
+                               robot.status === 'deploying' ? 'deploying' :
+                               robot.status === 'checking' ? 'deploying' :
+                               robot.status === 'error' ? 'offline' :
+                               robot.status === 'unconfigured' ? 'offline' : 'offline';
+            
+            card.innerHTML = `
+                <div class="robot-header">
+                    <div class="robot-name">${robot.id}</div>
+                    <div class="robot-status">
+                        <span class="status-dot ${statusClass}"></span>
+                        <span>${robot.status}</span>
+                    </div>
+                </div>
+                <div class="robot-info">
+                    <div>IP: ${robot.ip}</div>
+                    <div>Version: ${robot.version || 'unknown'}</div>
+                    ${robot.services ? `
+                        <div>Services:
+                            ${robot.services.teleop ? '✅ teleop' : '❌ teleop'}
+                            ${robot.services.lekiwi ? '✅ lekiwi' : '❌ lekiwi'}
+                        </div>
+                    ` : ''}
+                    ${robot.installed ? `
+                        <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); font-size: 0.85rem;">
+                            <div style="font-weight: 600; margin-bottom: 0.3rem;">Installation:</div>
+                            <div>${robot.installed.conda ? '✅' : '❌'} Miniconda ${!robot.installed.conda && robot.services?.lekiwi ? '⚠️ BROKEN!' : ''}</div>
+                            <div>${robot.installed.lerobot ? '✅' : '❌'} LeRobot</div>
+                            <div>${robot.installed.lekiwi ? '✅' : '❌'} LeKiwi Package</div>
+                            ${robot.services?.lekiwi && !robot.installed?.conda ?
+                                '<div style="color: var(--warning); margin-top: 0.3rem;">⚠️ Using system Python!</div>' : ''}
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="robot-deployment">
+                    <div class="deployment-badge">
+                        ${robot.deployments.length} deployments
+                    </div>
+                </div>
+            `;
+            
+            card.onclick = () => selectRobot(robot);
+            
+            return card;
+        }
+
+        // Select robot to view details
+        async function selectRobot(robot) {
+            selectedRobot = robot.ip;
+            updateRobotGrid();
+            
+            // Show robot panel
+            const panel = document.getElementById('robot-panel');
+            panel.style.display = 'block';
+            
+            document.getElementById('selected-robot-name').textContent = 
+                `${robot.id} - ${robot.ip}`;
+            
+            // Load deployments for this robot
+            await loadRobotDeployments(robot);
+            
+            // Load logs
+            loadRobotLogs(robot);
+        }
+
+        // Load deployments for robot
+        async function loadRobotDeployments(robot) {
+            const container = document.getElementById('robot-deployments');
+            container.innerHTML = '<div class="spinner"></div> Loading deployments...';
+            
+            // TODO: Fetch actual deployments from server
+            // For now, show actions
+            container.innerHTML = `
+                <div style="display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;">
+                    <button class="btn btn-small" onclick="deployToRobot('${robot.ip}')">
+                        Deploy Latest
+                    </button>
+                    <button class="btn btn-ghost btn-small" onclick="fixRobotConfig('${robot.ip}')">
+                        Fix Config
+                    </button>
+                    ${robot.installed && !robot.installed.conda ? `
+                        <button class="btn btn-ghost btn-small" onclick="installConda('${robot.ip}')">
+                            Install Miniconda
+                        </button>
+                    ` : ''}
+                    ${robot.installed?.conda && !robot.installed?.lekiwi ? `
+                        <button class="btn btn-ghost btn-small" onclick="setupPythonEnv('${robot.ip}')">
+                            Setup Python Env
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-danger btn-small" onclick="resetRobot('${robot.ip}')">
+                        Reset
+                    </button>
+                </div>
+                <div class="deployment-item">
+                    <div>
+                        <div class="deployment-status">
+                            <span class="status-dot online"></span>
+                            <strong>Current: ${robot.version || 'unknown'}</strong>
+                        </div>
+                    </div>
+                    <div class="deployment-meta">
+                        <span>Teleop: ${robot.services?.teleop ? 'Active' : 'Inactive'}</span>
+                        <span>LeKiwi: ${robot.services?.lekiwi ? 'Active' : 'Inactive'}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Load robot logs
+        function loadRobotLogs(robot) {
+            const logs = document.getElementById('robot-logs');
+            logs.innerHTML = `<div class="log-entry info">Logs for ${robot.id}</div>`;
+            
+            // Show the raw output from the check
+            if (robot.rawOutput) {
+                const lines = robot.rawOutput.split('\n');
+                lines.forEach(line => {
+                    let className = 'info';
+                    if (line.includes('✓')) className = 'success';
+                    else if (line.includes('✗')) className = 'error';
+                    else if (line.includes('⚠')) className = 'warning';
+                    
+                    const entry = document.createElement('div');
+                    entry.className = `log-entry ${className}`;
+                    entry.textContent = line;
+                    logs.appendChild(entry);
+                });
+            }
+        }
+        
+        // Install Miniconda on robot
+        async function installConda(ip) {
+            addLog(`📦 Installing Miniconda on ${ip}...`, 'info');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'python3',
+                        args: ['deployment-master/lekiwi-master-deploy.py', ip, '--action', 'install-conda']
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    addLog(`✅ Miniconda installation started on ${ip}`, 'success');
+                    setTimeout(() => checkSingleRobot(ip), 5000);
+                } else {
+                    addLog(`❌ Failed to install Miniconda on ${ip}`, 'error');
+                }
+            } catch (error) {
+                addLog(`❌ Error installing Miniconda: ${error.message}`, 'error');
+            }
+        }
+        
+        // Setup Python environment
+        async function setupPythonEnv(ip) {
+            addLog(`🐍 Setting up Python environment on ${ip}...`, 'info');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'python3',
+                        args: ['deployment-master/lekiwi-master-deploy.py', ip, '--action', 'setup-env']
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    addLog(`✅ Python environment setup started on ${ip}`, 'success');
+                    setTimeout(() => checkSingleRobot(ip), 10000);
+                } else {
+                    addLog(`❌ Failed to setup Python environment on ${ip}`, 'error');
+                }
+            } catch (error) {
+                addLog(`❌ Error setting up environment: ${error.message}`, 'error');
+            }
+        }
+
+        // Deploy to specific robot
+        async function deployToRobot(ip) {
+            addLog(`Starting deployment to ${ip}...`, 'info');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'python3',
+                        args: ['deployment-master/lekiwi-master-deploy.py', ip, '--action', 'full']
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    addLog(`Deployment complete for ${ip}`, 'success');
+                    checkSingleRobot(ip);
+                } else {
+                    addLog(`Deployment failed for ${ip}`, 'error');
+                }
+            } catch (error) {
+                addLog(`Error deploying to ${ip}: ${error.message}`, 'error');
+            }
+        }
+
+        // Fix robot configuration
+        async function fixRobotConfig(ip) {
+            addLog(`🔧 Starting fix for robot ${ip}...`, 'info');
+            
+            // Step 1: Clear SSH known hosts
+            addLog(`Clearing SSH keys for ${ip}...`, 'info');
+            const sshClearResponse = await fetch(`${API_URL}/api/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'ssh-keygen',
+                    args: ['-R', ip]
+                })
+            });
+            
+            if (sshClearResponse.ok) {
+                const result = await sshClearResponse.json();
+                addLog(`SSH keys cleared: ${result.output || 'Success'}`, 'success');
+            }
+            
+            // Step 2: Fix teleop config and restart services
+            addLog(`Fixing teleop configuration for ${ip}...`, 'info');
+            try {
+                // Use correct path for deployment script
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'python3',
+                        args: ['deployment-master/lekiwi-master-deploy.py', ip, '--action', 'teleop-only']
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        addLog(`✅ Configuration fixed for ${ip}`, 'success');
+                        
+                        // Step 3: Restart the robot
+                        addLog(`Restarting robot ${ip}...`, 'info');
+                        const restartCmd = `sshpass -p lekiwi ssh -o StrictHostKeyChecking=no lekiwi@${ip} "sudo systemctl restart teleop lekiwi && sudo reboot"`;
+                        
+                        const restartResponse = await fetch(`${API_URL}/api/execute`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                command: 'bash',
+                                args: ['-c', restartCmd]
+                            })
+                        });
+                        
+                        if (restartResponse.ok) {
+                            const restartResult = await restartResponse.json();
+                            addLog(`✅ Robot ${ip} restarted successfully`, 'success');
+                            
+                            // Wait and check status
+                            setTimeout(() => {
+                                addLog(`⏳ Waiting for robot to restart...`, 'info');
+                                setTimeout(() => {
+                                    checkSingleRobot(ip);
+                                    addLog(`✅ Fix complete for ${ip}!`, 'success');
+                                }, 30000);  // Wait 30 seconds for reboot
+                            }, 3000);
+                        }
+                    } else {
+                        addLog(`Error output: ${result.error || result.output}`, 'error');
+                    }
+                }
+            } catch (error) {
+                addLog(`❌ Error fixing ${ip}: ${error.message}`, 'error');
+            }
+        }
+
+        // Reset robot (full reboot)
+        async function resetRobot(ip) {
+            if (!confirm(`Reboot robot at ${ip}?`)) return;
+            
+            addLog(`🔄 Rebooting robot ${ip}...`, 'info');
+            
+            const rebootCmd = `sshpass -p lekiwi ssh -o StrictHostKeyChecking=no lekiwi@${ip} "sudo reboot"`;
+            
+            try {
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'bash',
+                        args: ['-c', rebootCmd]
+                    })
+                });
+                
+                if (response.ok) {
+                    addLog(`✅ Robot ${ip} is rebooting...`, 'success');
+                    
+                    // Mark as offline and check again in 60 seconds
+                    const robot = robots.get(ip);
+                    if (robot) {
+                        robot.status = 'rebooting';
+                        updateRobotGrid();
+                    }
+                    
+                    setTimeout(() => {
+                        addLog(`Checking if ${ip} is back online...`, 'info');
+                        checkSingleRobot(ip);
+                    }, 60000);
+                }
+            } catch (error) {
+                addLog(`❌ Error rebooting ${ip}: ${error.message}`, 'error');
+            }
+        }
+
+        // Quick deploy
+        async function quickDeploy() {
+            const version = document.getElementById('deploy-version').value;
+            const target = document.getElementById('deploy-target').value;
+            
+            if (!version) {
+                alert('Please enter a version');
+                return;
+            }
+            
+            addLog(`Deploying ${version} to ${target}...`, 'info');
+            
+            // TODO: Implement actual deployment
+            try {
+                const response = await fetch(`${API_URL}/api/deploy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        version: version,
+                        branch: 'main',
+                        target_group: target === 'selected' && selectedRobot ? selectedRobot : target,
+                        author: 'Web UI',
+                        message: `Deployed ${version} via web interface`
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    addLog(`Deployment ${result.deployment_id} created`, 'success');
+                }
+            } catch (error) {
+                addLog(`Deployment failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Add log entry
+        function addLog(message, type = 'info') {
+            const logs = document.getElementById('robot-logs');
+            if (!logs) return;
+            
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logs.appendChild(entry);
+            logs.scrollTop = logs.scrollHeight;
+            
+            // Keep only last 100 logs
+            while (logs.children.length > 100) {
+                logs.removeChild(logs.firstChild);
+            }
+        }
+
+        // Tab switching
+        function showTab(tab) {
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // TODO: Implement tab content switching
+            if (tab === 'deployments') {
+                loadDeployments();
+            }
+        }
+
+        // Fix SSH key issue
+        async function fixSSHKey(ip) {
+            try {
+                const response = await fetch(`${API_URL}/api/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        command: 'ssh-keygen',
+                        args: ['-R', ip]
+                    })
+                });
+                
+                if (response.ok) {
+                    addLog(`✅ SSH key cleared for ${ip}`, 'success');
+                    return true;
+                }
+            } catch (error) {
+                addLog(`❌ Failed to clear SSH key for ${ip}`, 'error');
+                return false;
+            }
+        }
+
+        // Utility functions
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+        }
+
+        function refreshAll() {
+            checkRobots();
+            addLog('Refreshed all robots', 'info');
+        }
+
+        function rollbackAll() {
+            if (confirm('Rollback all robots to previous version?')) {
+                // TODO: Implement rollback
+                addLog('Rollback initiated', 'info');
+            }
+        }
+    </script>
+</body>
+</html>

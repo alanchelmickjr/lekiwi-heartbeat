@@ -18,7 +18,8 @@ from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
@@ -107,6 +108,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Helper functions
 def generate_deployment_id() -> str:
@@ -274,9 +280,26 @@ async def build_deployment_package(deployment: Deployment) -> Dict:
 
 # API Endpoints
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Root endpoint with server info"""
+    """Serve the web dashboard"""
+    index_file = Path(__file__).parent / "static" / "index.html"
+    if index_file.exists():
+        return index_file.read_text()
+    else:
+        # Fallback to API info if no HTML file
+        return JSONResponse({
+            "name": "LeKiwi Deploy Server",
+            "version": "1.0.0",
+            "status": "operational",
+            "deployments": len(deployments_db),
+            "robots": len(robot_status_db),
+            "latest_deployment": max(deployments_db.values(), key=lambda x: x["timestamp"])["id"] if deployments_db else None
+        })
+
+@app.get("/api/info")
+async def api_info():
+    """API info endpoint"""
     return {
         "name": "LeKiwi Deploy Server",
         "version": "1.0.0",
@@ -546,6 +569,85 @@ async def health_check():
         "deployments": len(deployments_db),
         "robots": len(robot_status_db)
     }
+
+# Execute command endpoint for robot management
+@app.post("/api/execute")
+async def execute_command(request: Request):
+    """Execute deployment commands for robot management"""
+    try:
+        data = await request.json()
+        command = data.get("command")
+        args = data.get("args", [])
+        
+        # Security check - only allow specific commands
+        allowed_commands = ["python3", "python", "bash", "ssh-keygen", "sshpass"]
+        if command not in allowed_commands and not command.endswith('.py'):
+            raise HTTPException(status_code=403, detail=f"Command not allowed: {command}")
+        
+        # Fix paths for deployment scripts
+        if command in ["python3", "python"] and args and "deployment-master" in args[0]:
+            # Adjust path to be relative to current working directory
+            import os
+            script_path = args[0]
+            if not os.path.isabs(script_path):
+                # Go up one directory from deployment-server to find deployment-master
+                args[0] = os.path.join(os.path.dirname(os.path.dirname(__file__)), script_path)
+        
+        # Execute command
+        full_command = [command] + args
+        print(f"Executing: {' '.join(full_command)}")  # Debug logging
+        
+        result = subprocess.run(full_command, capture_output=True, text=True, timeout=30, cwd=os.path.dirname(os.path.dirname(__file__)))
+        
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr,
+            "return_code": result.returncode
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Command timed out")
+    except Exception as e:
+        print(f"Error in execute_command: {e}")  # Debug logging
+        raise HTTPException(status_code=500, detail=str(e))
+
+# WebSocket for real-time updates
+from fastapi import WebSocket, WebSocketDisconnect
+from typing import Set
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+    
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+    
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket for real-time updates"""
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive and handle messages
+            data = await websocket.receive_text()
+            # Echo back or handle commands
+            await websocket.send_text(f"Echo: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 # Main entry point
 if __name__ == "__main__":
