@@ -1857,6 +1857,7 @@
             modalContent.style.height = '80vh';
             modalContent.style.maxHeight = '80vh';
             
+            // Use the professional xterm.js terminal in an iframe
             modalBody.innerHTML = `
                 <div style="display: flex; flex-direction: column; height: calc(80vh - 100px);">
                     <div class="ssh-header" style="flex-shrink: 0;">
@@ -1867,20 +1868,10 @@
                             Disconnect
                         </button>
                     </div>
-                    <div class="ssh-terminal" id="ssh-terminal-${sessionId}" style="flex: 1; min-height: 0; overflow-y: auto;">
-                        <div style="color: #0f0;">LeKiwi SSH Terminal</div>
-                        <div style="color: #ff0;">Connecting to ${robotID} (${robotIP})...</div>
-                        <div id="ssh-output-${sessionId}"></div>
-                    </div>
-                    <div class="ssh-input-container" style="flex-shrink: 0; border: 2px solid #0f0; background: #000; padding: 10px;">
-                        <span class="ssh-prompt" id="ssh-prompt-${sessionId}" style="color: #0f0; font-weight: bold;">lekiwi@${robotIP}:~$</span>
-                        <input type="text" class="ssh-input" id="ssh-input-${sessionId}"
-                               style="background: #000; color: #0f0; border: none; outline: none; flex: 1; font-size: 14px; padding: 5px;"
-                               placeholder="Type command and press Enter..."
-                               onkeypress="handleSSHInput(event, '${sessionId}', '${robotIP}')"
-                               autocomplete="off" spellcheck="false">
-                        <span class="ssh-loading loading-dots" id="ssh-loading-${sessionId}" style="display: none; color: #ff0; margin-left: 10px;">Executing</span>
-                    </div>
+                    <iframe src="/static/xterm-ssh.html?ip=${encodeURIComponent(robotIP)}&id=${encodeURIComponent(robotID)}"
+                            id="ssh-iframe-${sessionId}"
+                            style="flex: 1; border: none; width: 100%; background: #000;">
+                    </iframe>
                 </div>
             `;
             
@@ -1894,124 +1885,8 @@
             // Show modal
             document.getElementById('modal').classList.add('active');
             activeSSHModal = sessionId;
-            
-            // Focus input
-            setTimeout(() => {
-                document.getElementById(`ssh-input-${sessionId}`).focus();
-            }, 100);
-            
-            // Initialize with a welcome command
-            executeSSHCommand(sessionId, 'whoami && pwd && ls -la', robotIP);
         }
 
-        async function handleSSHInput(event, sessionId, robotIP) {
-            if (event.key === 'Enter') {
-                const input = event.target;
-                const command = input.value.trim();
-                
-                if (command) {
-                    // Show loading
-                    showSSHLoading(sessionId, true);
-                    
-                    // Add command to terminal
-                    const output = document.getElementById(`ssh-output-${sessionId}`);
-                    const prompt = document.getElementById(`ssh-prompt-${sessionId}`).textContent;
-                    output.innerHTML += `<div style="color: #0f0;">${prompt} ${command}</div>`;
-                    
-                    // Clear input immediately
-                    input.value = '';
-                    
-                    // Execute command
-                    await executeSSHCommand(sessionId, command, robotIP);
-                    
-                    // Hide loading
-                    showSSHLoading(sessionId, false);
-                    
-                    // Scroll to bottom
-                    const terminal = document.getElementById(`ssh-terminal-${sessionId}`);
-                    terminal.scrollTop = terminal.scrollHeight;
-                    
-                    // Focus input again
-                    input.focus();
-                }
-            } else if (event.key === 'ArrowUp') {
-                // TODO: Add command history
-                event.preventDefault();
-            } else if (event.key === 'Tab') {
-                // TODO: Add tab completion
-                event.preventDefault();
-            }
-        }
-
-        function showSSHLoading(sessionId, show) {
-            const loading = document.getElementById(`ssh-loading-${sessionId}`);
-            const input = document.getElementById(`ssh-input-${sessionId}`);
-            
-            if (loading && input) {
-                if (show) {
-                    loading.style.display = 'inline-block';
-                    input.disabled = true;
-                    input.style.opacity = '0.5';
-                } else {
-                    loading.style.display = 'none';
-                    input.disabled = false;
-                    input.style.opacity = '1';
-                }
-            }
-        }
-
-        async function executeSSHCommand(sessionId, command, robotIP) {
-            const output = document.getElementById(`ssh-output-${sessionId}`);
-            const terminal = document.getElementById(`ssh-terminal-${sessionId}`);
-            
-            try {
-                const startTime = Date.now();
-                // Add TERM environment variable to fix clear and other terminal commands
-                const response = await fetch(`${API_URL}/api/ssh-execute`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        robot_ip: robotIP,
-                        command: `export TERM=xterm-256color && ${command}`
-                    })
-                });
-
-                const duration = Date.now() - startTime;
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    
-                    if (result.stdout && result.stdout.trim()) {
-                        output.innerHTML += `<div style="color: #fff; margin-bottom: 0.3rem;">${result.stdout}</div>`;
-                    }
-                    
-                    if (result.stderr && result.stderr.trim()) {
-                        output.innerHTML += `<div style="color: #f00; margin-bottom: 0.3rem;">stderr: ${result.stderr}</div>`;
-                    }
-                    
-                    // Show execution time for long commands
-                    if (duration > 1000) {
-                        output.innerHTML += `<div style="color: #888; font-size: 0.8em; margin-bottom: 0.3rem;">Command completed in ${duration}ms</div>`;
-                    }
-                    
-                    // Update prompt based on current directory if pwd was run
-                    if (command === 'pwd' && result.stdout) {
-                        const pwd = result.stdout.trim();
-                        const promptElement = document.getElementById(`ssh-prompt-${sessionId}`);
-                        if (promptElement) {
-                            promptElement.textContent = `lekiwi@${robotIP}:${pwd.replace('/home/lekiwi', '~')}$`;
-                        }
-                    }
-                } else {
-                    output.innerHTML += `<div style="color: #f00; margin-bottom: 0.3rem;">HTTP ${response.status}: Command execution failed</div>`;
-                }
-            } catch (error) {
-                output.innerHTML += `<div style="color: #f00; margin-bottom: 0.3rem;">Connection error: ${error.message}</div>`;
-            }
-            
-            // Auto-scroll to bottom
-            terminal.scrollTop = terminal.scrollHeight;
-        }
 
         async function disconnectSSH(sessionId) {
             try {

@@ -19,6 +19,8 @@
         const term = new Terminal({
             cursorBlink: true,
             fontSize: 14,
+            cols: 80,
+            rows: 24,
             theme: {
                 background: '#000000',
                 foreground: '#00ff00'
@@ -28,9 +30,24 @@
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
         term.open(document.getElementById('terminal'));
-        fitAddon.fit();
         
-        window.addEventListener('resize', () => fitAddon.fit());
+        // Properly fit terminal and update size
+        function fitTerminal() {
+            fitAddon.fit();
+            // Send terminal size to backend if needed
+            const cols = term.cols;
+            const rows = term.rows;
+            console.log(`Terminal resized to ${cols}x${rows}`);
+        }
+        
+        // Initial fit after a small delay to ensure DOM is ready
+        setTimeout(() => {
+            fitTerminal();
+        }, 100);
+        
+        window.addEventListener('resize', () => {
+            fitTerminal();
+        });
         
         term.writeln('LeKiwi SSH Terminal - ' + robotID + ' (' + robotIP + ')');
         term.writeln('Connecting...\r\n');
@@ -38,18 +55,28 @@
         let commandBuffer = '';
         term.onData(data => {
             if (data === '\r') {
-                // Send command
+                // Send command with proper terminal settings
+                const cols = term.cols || 80;
                 fetch('/api/ssh-execute', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         robot_ip: robotIP,
-                        command: commandBuffer
+                        command: `export TERM=xterm-256color && export COLUMNS=${cols} && stty cols ${cols} 2>/dev/null; ${commandBuffer}`
                     })
                 }).then(r => r.json()).then(result => {
                     term.write('\r\n');
-                    if (result.stdout) term.write(result.stdout);
-                    if (result.stderr) term.write('\x1b[31m' + result.stderr + '\x1b[0m');
+                    if (result.stdout) {
+                        // Process output line by line to handle formatting
+                        const lines = result.stdout.split('\n');
+                        lines.forEach((line, i) => {
+                            term.write(line);
+                            if (i < lines.length - 1) term.write('\r\n');
+                        });
+                    }
+                    if (result.stderr) {
+                        term.write('\x1b[31m' + result.stderr + '\x1b[0m');
+                    }
                     term.write('\r\nlekiwi@' + robotIP + ':~$ ');
                 });
                 commandBuffer = '';
@@ -65,8 +92,30 @@
             }
         });
         
-        // Initial prompt
+        // Initial prompt and run initial command to show system info
         term.write('lekiwi@' + robotIP + ':~$ ');
+        
+        // Run initial welcome command with proper terminal settings
+        setTimeout(() => {
+            const cols = term.cols || 80;
+            fetch('/api/ssh-execute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    robot_ip: robotIP,
+                    command: `export TERM=xterm-256color && export COLUMNS=${cols} && stty cols ${cols} 2>/dev/null; whoami && hostname && pwd`
+                })
+            }).then(r => r.json()).then(result => {
+                if (result.stdout) {
+                    const lines = result.stdout.split('\n');
+                    lines.forEach((line, i) => {
+                        term.write(line);
+                        if (i < lines.length - 1) term.write('\r\n');
+                    });
+                    term.write('\r\nlekiwi@' + robotIP + ':~$ ');
+                }
+            });
+        }, 200);
     </script>
 </body>
 </html>
