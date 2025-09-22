@@ -1,0 +1,32 @@
+{
+  "tracked_files": [
+    "/opt/frodobots/teleop.ini",
+    "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi_config.json",
+    "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi_host.py",
+    "/etc/systemd/system/teleop.service",
+    "/etc/systemd/system/lekiwi.service",
+    "/home/lekiwi/.bashrc",
+    "/opt/frodobots/teleop.sh"
+  ],
+  "tracked_binaries": [
+    "/opt/frodobots/teleop_agent",
+    "/opt/frodobots/lib/libteleop_media_gst.so",
+    "/opt/frodobots/lib/libteleop_ctrl_zmq_ik.so",
+    "/opt/frodobots/cert/cert.pem",
+    "/opt/frodobots/cert/priv.pem",
+    "/opt/frodobots/cert/AmazonRootCA1.pem"
+  ],
+  "tracked_directories": [
+    "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi",
+    "/opt/frodobots/lib",
+    "/opt/frodobots/cert"
+  ],
+  "excluded_patterns": [
+    "*.pyc",
+    "__pycache__",
+    "*.log",
+    "*.pid",
+    ".git",
+    ".gitignore"
+  ]
+}

@@ -15,15 +15,22 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #000;
             color: #e0e0e0;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
             padding: 20px;
-            line-height: 1.6;
         }
         
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 30px;
             border-radius: 12px;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             text-align: center;
         }
         
@@ -261,13 +268,53 @@
             color: #ff6b6b;
             background: rgba(255, 107, 107, 0.1);
         }
+        
+        .nav-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        
+        .nav-tab {
+            padding: 12px 24px;
+            background: #0d0d0d;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #e0e0e0;
+            text-decoration: none;
+            transition: all 0.3s;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        
+        .nav-tab:hover {
+            background: #1a1a1a;
+            border-color: #667eea;
+            transform: translateY(-1px);
+        }
+        
+        .nav-tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: white;
+        }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🤖 LeKiwi Robot Fleet Comparison</h1>
-        <div class="subtitle">Version Control for Robot Deployments - Baseline v0.01</div>
-    </div>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 LeKiwi Robot Fleet Control</h1>
+            <div class="subtitle">Advanced Deployment & Management Platform</div>
+        </div>
+        
+        <nav class="nav-tabs">
+            <a class="nav-tab" onclick="window.location.href='/'">🤖 Fleet Overview</a>
+            <a class="nav-tab active" onclick="window.location.href='/static/comparison.html'">📊 Deployment Comparison</a>
+        </nav>
     
     <!-- Baseline Management -->
     <div class="comparison-section">
@@ -276,11 +323,6 @@
         <div class="comparison-controls">
             <select id="baseline-source-select">
                 <option value="">Select Master Robot for Baseline</option>
-                <option value="192.168.88.21">192.168.88.21</option>
-                <option value="192.168.88.57">192.168.88.57</option>
-                <option value="192.168.88.58">192.168.88.58</option>
-                <option value="192.168.88.62">192.168.88.62</option>
-                <option value="192.168.88.64">192.168.88.64</option>
             </select>
             
             <button onclick="createBaselineFromMaster()" class="button">
@@ -308,20 +350,10 @@
         <div class="comparison-controls">
             <select id="robot1-select">
                 <option value="">Select Robot 1</option>
-                <option value="192.168.88.21">192.168.88.21 (Working)</option>
-                <option value="192.168.88.57">192.168.88.57 (Broken)</option>
-                <option value="192.168.88.58">192.168.88.58 (Working)</option>
-                <option value="192.168.88.62">192.168.88.62 (Working)</option>
-                <option value="192.168.88.64">192.168.88.64 (Broken)</option>
             </select>
             
             <select id="robot2-select">
                 <option value="">Select Robot 2</option>
-                <option value="192.168.88.21">192.168.88.21 (Working)</option>
-                <option value="192.168.88.57">192.168.88.57 (Broken)</option>
-                <option value="192.168.88.58">192.168.88.58 (Working)</option>
-                <option value="192.168.88.62">192.168.88.62 (Working)</option>
-                <option value="192.168.88.64">192.168.88.64 (Broken)</option>
             </select>
             
             <button onclick="compareRobots()" class="button">
@@ -341,11 +373,6 @@
         <div class="comparison-controls">
             <select id="compliance-robot-select">
                 <option value="">Select Robot to Check</option>
-                <option value="192.168.88.21">192.168.88.21</option>
-                <option value="192.168.88.57">192.168.88.57</option>
-                <option value="192.168.88.58">192.168.88.58</option>
-                <option value="192.168.88.62">192.168.88.62</option>
-                <option value="192.168.88.64">192.168.88.64</option>
             </select>
             
             <button onclick="checkCompliance()" class="button">
@@ -373,6 +400,63 @@
     <script>
         const API_URL = window.location.origin;
         let currentMasterRobot = localStorage.getItem('masterRobot') || null;
+        let fleetRobots = [];
+        
+        // Load fleet from discovered robots
+        async function loadFleet() {
+            try {
+                const response = await fetch(`${API_URL}/api/fleet`);
+                if (response.ok) {
+                    const data = await response.json();
+                    fleetRobots = data.robots || [];
+                    
+                    // Populate all robot selects
+                    populateRobotSelects();
+                    
+                    // Update fleet overview with loaded robots
+                    const robotIPs = fleetRobots.map(r => r.ip);
+                    updateFleetOverview(robotIPs);
+                }
+            } catch (error) {
+                console.error('Failed to load fleet:', error);
+                // Fallback to default robots
+                fleetRobots = [
+                    {ip: '192.168.88.21', hostname: 'lekiwi_21'},
+                    {ip: '192.168.88.57', hostname: 'lekiwi_57'},
+                    {ip: '192.168.88.58', hostname: 'lekiwi_58'},
+                    {ip: '192.168.88.62', hostname: 'lekiwi_62'},
+                    {ip: '192.168.88.64', hostname: 'lekiwi_64'}
+                ];
+                populateRobotSelects();
+                updateFleetOverview(fleetRobots.map(r => r.ip));
+            }
+        }
+        
+        // Populate robot select dropdowns
+        function populateRobotSelects() {
+            const selects = [
+                'baseline-source-select',
+                'robot1-select',
+                'robot2-select',
+                'compliance-robot-select'
+            ];
+            
+            selects.forEach(selectId => {
+                const select = document.getElementById(selectId);
+                // Keep the first option (placeholder)
+                const firstOption = select.options[0];
+                select.innerHTML = '';
+                select.appendChild(firstOption);
+                
+                // Add robot options
+                fleetRobots.forEach(robot => {
+                    const option = document.createElement('option');
+                    option.value = robot.ip;
+                    option.textContent = `${robot.ip} (${robot.hostname})`;
+                    select.appendChild(option);
+                });
+            });
+        }
         
         // Update display on load
         if (currentMasterRobot) {
@@ -705,13 +789,7 @@
         
         // Check all robots compliance
         async function checkAllCompliance() {
-            const robots = [
-                '192.168.88.21',
-                '192.168.88.57',
-                '192.168.88.58',
-                '192.168.88.62',
-                '192.168.88.64'
-            ];
+            const robots = fleetRobots.map(r => r.ip);
             
             const resultDiv = document.getElementById('compliance-result');
             resultDiv.style.display = 'block';
@@ -823,19 +901,14 @@
         }
         
         // Initialize on load
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Load fleet from discovered robots
+            await loadFleet();
+            
             // Check if baseline exists
             getBaselineInfo();
-            
-            // Initialize fleet overview
-            updateFleetOverview([
-                '192.168.88.21',
-                '192.168.88.57',
-                '192.168.88.58',
-                '192.168.88.62',
-                '192.168.88.64'
-            ]);
         });
     </script>
+    </div>
 </body>
 </html>

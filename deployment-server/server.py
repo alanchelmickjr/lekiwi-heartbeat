@@ -35,9 +35,9 @@ from comparison_engine import (
 # Configuration
 CONFIG = {
     "server_port": int(os.getenv("DEPLOY_PORT", "8000")),
-    "deployments_dir": Path(os.getenv("DEPLOYMENTS_DIR", "/opt/lekiwi-deploy/deployments")),
-    "packages_dir": Path(os.getenv("PACKAGES_DIR", "/opt/lekiwi-deploy/packages")),
-    "repos_dir": Path(os.getenv("REPOS_DIR", "/opt/lekiwi-deploy/repos")),
+    "deployments_dir": Path(os.getenv("DEPLOYMENTS_DIR", Path.home() / ".lekiwi-deploy/deployments")),
+    "packages_dir": Path(os.getenv("PACKAGES_DIR", Path.home() / ".lekiwi-deploy/packages")),
+    "repos_dir": Path(os.getenv("REPOS_DIR", Path.home() / ".lekiwi-deploy/repos")),
     "max_deployments": int(os.getenv("MAX_DEPLOYMENTS", "100")),
     "github_repo": os.getenv("GITHUB_REPO", "https://github.com/your-org/robot-code.git"),
     "github_token": os.getenv("GITHUB_TOKEN", ""),  # Optional, for private repos
@@ -304,6 +304,27 @@ async def root():
             "robots": len(robot_status_db),
             "latest_deployment": max(deployments_db.values(), key=lambda x: x["timestamp"])["id"] if deployments_db else None
         })
+
+@app.get("/api/fleet")
+async def get_fleet():
+    """Get the discovered fleet configuration"""
+    fleet_file = Path("/tmp/lekiwi_fleet.json")
+    if fleet_file.exists():
+        with open(fleet_file, 'r') as f:
+            return json.load(f)
+    else:
+        # Return default fleet if file doesn't exist
+        return {
+            "robots": [
+                {"ip": "192.168.88.21", "hostname": "lekiwi_21", "status": "discovered", "type": "Raspberry Pi"},
+                {"ip": "192.168.88.57", "hostname": "lekiwi_57", "status": "discovered", "type": "Raspberry Pi"},
+                {"ip": "192.168.88.58", "hostname": "lekiwi_58", "status": "discovered", "type": "Raspberry Pi"},
+                {"ip": "192.168.88.62", "hostname": "lekiwi_62", "status": "discovered", "type": "Raspberry Pi"},
+                {"ip": "192.168.88.64", "hostname": "lekiwi_64", "status": "discovered", "type": "Raspberry Pi"}
+            ],
+            "total": 5,
+            "discovered_at": datetime.now().timestamp()
+        }
 
 @app.get("/api/info")
 async def api_info():
@@ -766,6 +787,47 @@ async def refresh_robot_cache(robot_ip: str):
         }
     except Exception as e:
         print(f"Error refreshing cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/deploy-from-master")
+async def deploy_from_master(request: Request):
+    """Deploy from master robot (.21) to target robot using rsync and auto-configure teleop.ini"""
+    try:
+        data = await request.json()
+        target_ip = data.get("target_ip")
+        master_ip = data.get("master_ip", "192.168.88.21")  # Default to .21 as master
+        
+        if not target_ip:
+            raise HTTPException(status_code=400, detail="target_ip is required")
+        
+        print(f"🚀 Deploying from {master_ip} to {target_ip}...")
+        
+        # Execute the deployment script with source parameter
+        result = subprocess.run(
+            ["python3",
+             os.path.join(os.path.dirname(os.path.dirname(__file__)), "deployment-master/lekiwi-master-deploy.py"),
+             target_ip,
+             "--source", master_ip,
+             "--action", "full"],
+            capture_output=True,
+            text=True,
+            timeout=120,  # 2 minute timeout for full deployment
+            cwd=os.path.dirname(os.path.dirname(__file__))
+        )
+        
+        return {
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr,
+            "message": f"Deployment from {master_ip} to {target_ip} " +
+                      ("completed successfully" if result.returncode == 0 else "failed"),
+            "return_code": result.returncode
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Deployment timed out")
+    except Exception as e:
+        print(f"Error in deploy_from_master: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # WebSocket for real-time updates

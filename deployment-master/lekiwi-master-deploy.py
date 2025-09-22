@@ -112,8 +112,10 @@ class LeKiwiDeployment:
         ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/lerobot/lerobot/common/robots/lekiwi ]", suppress_error=True)
         status['installations']['lekiwi'] = (ret == 0)
         
-        ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3/envs/lerobotenv ]", suppress_error=True)
-        status['conda_env'] = (ret == 0)
+        # Check for either lerobot or lerobotenv conda environments
+        ret1, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3/envs/lerobot ]", suppress_error=True)
+        ret2, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3/envs/lerobotenv ]", suppress_error=True)
+        status['conda_env'] = (ret1 == 0 or ret2 == 0)
         
         for component, installed in status['installations'].items():
             if installed:
@@ -158,10 +160,10 @@ class LeKiwiDeployment:
             self.execute_ssh("bash /tmp/miniconda.sh -b -p /home/lekiwi/miniconda3")
             self.execute_ssh("echo 'export PATH=/home/lekiwi/miniconda3/bin:$PATH' >> ~/.bashrc")
             
-        # Create conda environment and install LeRobot
+        # Create conda environment and install LeRobot (use lerobot as env name)
         self.log("  Creating conda environment...", Colors.YELLOW)
-        self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate && conda create -n lerobotenv python=3.10 -y")
-        self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate lerobotenv && cd /home/lekiwi/lerobot && pip install -e .")
+        self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate && conda create -n lerobot python=3.10 -y")
+        self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate lerobot && cd /home/lekiwi/lerobot && pip install -e .")
         
         self.log("  ✓ LeRobot installed", Colors.GREEN)
         return True
@@ -302,8 +304,8 @@ After=network.target
 Type=simple
 User=lekiwi
 WorkingDirectory=/home/lekiwi/lerobot
-Environment="PATH=/home/lekiwi/miniconda3/envs/lerobotenv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/home/lekiwi/miniconda3/envs/lerobotenv/bin/python /home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi_host.py
+Environment="PATH=/home/lekiwi/miniconda3/envs/lerobot/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/lekiwi/miniconda3/envs/lerobot/bin/python /home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi_host.py
 Restart=always
 RestartSec=10
 
