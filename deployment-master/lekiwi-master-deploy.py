@@ -124,7 +124,7 @@ class LeKiwiDeployment:
                 self.log(f"  ✗ {component}: not installed", Colors.YELLOW)
                 
         if status['conda_env']:
-            self.log(f"  ✓ Conda environment: lerobotenv exists", Colors.GREEN)
+            self.log(f"  ✓ Conda environment: lerobot exists", Colors.GREEN)
         else:
             self.log(f"  ✗ Conda environment: not found", Colors.YELLOW)
             
@@ -166,6 +166,123 @@ class LeKiwiDeployment:
         self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate lerobot && cd /home/lekiwi/lerobot && pip install -e .")
         
         self.log("  ✓ LeRobot installed", Colors.GREEN)
+        return True
+    
+    def install_miniconda_only(self) -> bool:
+        """Install only Miniconda without LeRobot"""
+        self.log("\n🐍 Installing Miniconda...", Colors.CYAN)
+        
+        # Check if already installed
+        ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3 ]", suppress_error=True)
+        if ret == 0:
+            self.log("  ℹ Miniconda already installed", Colors.YELLOW)
+            return True
+        
+        # Install dependencies
+        self.log("  Installing dependencies...", Colors.YELLOW)
+        self.execute_ssh("sudo apt-get update && sudo apt-get install -y wget")
+        
+        # Download and install Miniconda
+        self.log("  Downloading Miniconda...", Colors.YELLOW)
+        self.execute_ssh("wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O /tmp/miniconda.sh")
+        
+        self.log("  Installing Miniconda...", Colors.YELLOW)
+        ret, _, _ = self.execute_ssh("bash /tmp/miniconda.sh -b -p /home/lekiwi/miniconda3")
+        
+        if ret != 0:
+            self.log("  ✗ Failed to install Miniconda", Colors.RED)
+            return False
+            
+        # Add to PATH
+        self.execute_ssh("echo 'export PATH=/home/lekiwi/miniconda3/bin:$PATH' >> ~/.bashrc")
+        
+        self.log("  ✓ Miniconda installed successfully", Colors.GREEN)
+        return True
+    
+    def setup_python_environment(self) -> bool:
+        """Setup conda environment with LeRobot and LeKiwi packages"""
+        self.log("\n🔧 Setting up Python environment...", Colors.CYAN)
+        
+        # Ensure Miniconda is installed
+        ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3 ]", suppress_error=True)
+        if ret != 0:
+            self.log("  Installing Miniconda first...", Colors.YELLOW)
+            if not self.install_miniconda_only():
+                return False
+        
+        # Check if lerobot conda environment exists
+        ret1, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3/envs/lerobot ]", suppress_error=True)
+        if ret1 == 0:
+            self.log("  ℹ lerobot environment already exists", Colors.YELLOW)
+        else:
+            # Create conda environment
+            self.log("  Creating lerobot conda environment...", Colors.YELLOW)
+            ret, _, _ = self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate && conda create -n lerobot python=3.10 -y")
+            if ret != 0:
+                self.log("  ✗ Failed to create conda environment", Colors.RED)
+                return False
+        
+        # Install LeRobot if not already installed
+        ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/lerobot ]", suppress_error=True)
+        if ret != 0:
+            self.log("  Cloning LeRobot repository...", Colors.YELLOW)
+            ret, _, _ = self.execute_ssh("cd /home/lekiwi && git clone https://github.com/huggingface/lerobot.git")
+            if ret != 0:
+                self.log("  ✗ Failed to clone LeRobot", Colors.RED)
+                return False
+        
+        # Install LeRobot in conda environment
+        self.log("  Installing LeRobot in conda environment...", Colors.YELLOW)
+        ret, _, _ = self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate lerobot && cd /home/lekiwi/lerobot && pip install -e .")
+        if ret != 0:
+            self.log("  ✗ Failed to install LeRobot", Colors.RED)
+            return False
+        
+        # Install LeKiwi package if missing
+        ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/lerobot/lerobot/common/robots/lekiwi ]", suppress_error=True)
+        if ret != 0:
+            self.log("  Installing LeKiwi robot package...", Colors.YELLOW)
+            # Copy LeKiwi package from master robot (.21)
+            self.copy_lekiwi_package()
+        else:
+            self.log("  ✓ LeKiwi package already installed", Colors.GREEN)
+        
+        self.log("  ✓ Python environment setup completed", Colors.GREEN)
+        return True
+    
+    def copy_lekiwi_package(self) -> bool:
+        """Copy LeKiwi robot package from master robot"""
+        self.log("  Copying LeKiwi package from master robot...", Colors.YELLOW)
+        
+        # Create the directory structure
+        self.execute_ssh("mkdir -p /home/lekiwi/lerobot/lerobot/common/robots/lekiwi")
+        
+        # Copy LeKiwi package files from master robot (.21)
+        master_ip = "192.168.88.21"
+        lekiwi_files = [
+            "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi_host.py",
+            "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi/__init__.py",
+            "/home/lekiwi/lerobot/lerobot/common/robots/lekiwi/lekiwi.py"
+        ]
+        
+        for file_path in lekiwi_files:
+            filename = os.path.basename(file_path)
+            cmd = f"sshpass -p {self.password} scp -o StrictHostKeyChecking=no {self.username}@{master_ip}:{file_path} /tmp/{filename}"
+            result = subprocess.run(cmd, shell=True, capture_output=True)
+            
+            if result.returncode == 0:
+                # Copy to target robot
+                if self.copy_to_robot(f"/tmp/{filename}", f"/tmp/{filename}"):
+                    self.execute_ssh(f"mv /tmp/{filename} /home/lekiwi/lerobot/lerobot/common/robots/lekiwi/")
+                    self.log(f"    ✓ Copied {filename}", Colors.GREEN)
+                else:
+                    self.log(f"    ✗ Failed to copy {filename}", Colors.RED)
+            else:
+                self.log(f"    ⚠️ Could not get {filename} from master robot", Colors.YELLOW)
+        
+        # Set permissions
+        self.execute_ssh("chown -R lekiwi:lekiwi /home/lekiwi/lerobot/lerobot/common/robots/lekiwi")
+        
         return True
         
     def configure_teleop(self) -> bool:
@@ -383,7 +500,7 @@ def main():
     parser.add_argument('--username', default='lekiwi', help='SSH username')
     parser.add_argument('--password', default='lekiwi', help='SSH password')
     parser.add_argument('--source', default='192.168.88.21', help='Source robot for copying teleop')
-    parser.add_argument('--action', default='full', choices=['full', 'check', 'teleop-only'],
+    parser.add_argument('--action', default='full', choices=['full', 'check', 'teleop-only', 'install-conda', 'setup-env'],
                        help='Deployment action')
     
     args = parser.parse_args()
@@ -395,6 +512,22 @@ def main():
         deployer.check_status()
     elif args.action == 'teleop-only':
         deployer.configure_teleop()
+    elif args.action == 'install-conda':
+        # Install Miniconda only
+        deployer.log(f"\n🐍 Installing Miniconda on {args.robot_ip}...", Colors.CYAN)
+        success = deployer.install_miniconda_only()
+        if success:
+            deployer.log("✅ Miniconda installation completed", Colors.GREEN)
+        else:
+            deployer.log("❌ Miniconda installation failed", Colors.RED)
+    elif args.action == 'setup-env':
+        # Setup Python environment (conda env + LeRobot + LeKiwi)
+        deployer.log(f"\n🔧 Setting up Python environment on {args.robot_ip}...", Colors.CYAN)
+        success = deployer.setup_python_environment()
+        if success:
+            deployer.log("✅ Python environment setup completed", Colors.GREEN)
+        else:
+            deployer.log("❌ Python environment setup failed", Colors.RED)
     else:
         deployer.deploy_full(args.source)
         

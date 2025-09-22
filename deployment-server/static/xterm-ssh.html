@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <style>
+        body { margin: 0; padding: 10px; background: #1a1a1a; }
+        #terminal { height: calc(100vh - 20px); }
+    </style>
+</head>
+<body>
+    <div id="terminal"></div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const robotIP = urlParams.get('ip');
+        const robotID = urlParams.get('id');
+        
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            theme: {
+                background: '#000000',
+                foreground: '#00ff00'
+            }
+        });
+        
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal'));
+        fitAddon.fit();
+        
+        window.addEventListener('resize', () => fitAddon.fit());
+        
+        term.writeln('LeKiwi SSH Terminal - ' + robotID + ' (' + robotIP + ')');
+        term.writeln('Connecting...\r\n');
+        
+        let commandBuffer = '';
+        term.onData(data => {
+            if (data === '\r') {
+                // Send command
+                fetch('/api/ssh-execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        robot_ip: robotIP,
+                        command: commandBuffer
+                    })
+                }).then(r => r.json()).then(result => {
+                    term.write('\r\n');
+                    if (result.stdout) term.write(result.stdout);
+                    if (result.stderr) term.write('\x1b[31m' + result.stderr + '\x1b[0m');
+                    term.write('\r\nlekiwi@' + robotIP + ':~$ ');
+                });
+                commandBuffer = '';
+            } else if (data === '\x7f') {
+                // Backspace
+                if (commandBuffer.length > 0) {
+                    commandBuffer = commandBuffer.slice(0, -1);
+                    term.write('\b \b');
+                }
+            } else {
+                commandBuffer += data;
+                term.write(data);
+            }
+        });
+        
+        // Initial prompt
+        term.write('lekiwi@' + robotIP + ':~$ ');
+    </script>
+</body>
+</html>

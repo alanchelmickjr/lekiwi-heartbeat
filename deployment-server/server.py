@@ -830,6 +830,80 @@ async def deploy_from_master(request: Request):
         print(f"Error in deploy_from_master: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# SSH API Endpoints for simplified SSH access
+@app.post("/api/ssh-simple")
+async def create_ssh_session(request: Request):
+    """Create simplified SSH session (returns session info for frontend)"""
+    try:
+        data = await request.json()
+        robot_ip = data.get("robot_ip")
+        robot_id = data.get("robot_id", robot_ip)
+        
+        if not robot_ip:
+            raise HTTPException(status_code=400, detail="robot_ip is required")
+        
+        # Test SSH connectivity
+        test_cmd = ["sshpass", "-p", "lekiwi", "ssh", "-o", "StrictHostKeyChecking=no",
+                   "-o", "ConnectTimeout=5", f"lekiwi@{robot_ip}", "echo 'SSH connection test'"]
+        
+        result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            raise HTTPException(status_code=503, detail=f"Cannot connect to robot at {robot_ip}: {result.stderr}")
+        
+        # Generate simple session ID
+        session_id = f"ssh_{uuid.uuid4().hex[:8]}_{robot_ip.replace('.', '_')}"
+        
+        return {
+            "session_id": session_id,
+            "robot_ip": robot_ip,
+            "robot_id": robot_id,
+            "status": "connected"
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail=f"SSH connection to {robot_ip} timed out")
+    except Exception as e:
+        print(f"SSH connection error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ssh-execute")
+async def execute_ssh_command(request: Request):
+    """Execute command via SSH on robot"""
+    try:
+        data = await request.json()
+        robot_ip = data.get("robot_ip")
+        command = data.get("command")
+        
+        if not robot_ip or not command:
+            raise HTTPException(status_code=400, detail="robot_ip and command are required")
+        
+        # Security: Basic command filtering
+        dangerous_commands = ["rm -rf", "format", "mkfs", "dd if=", ":(){ :|:& };:", "shutdown", "reboot"]
+        if any(dangerous in command.lower() for dangerous in dangerous_commands):
+            raise HTTPException(status_code=403, detail="Potentially dangerous command blocked")
+        
+        # Execute command via SSH
+        ssh_cmd = ["sshpass", "-p", "lekiwi", "ssh", "-o", "StrictHostKeyChecking=no",
+                  "-o", "ConnectTimeout=10", f"lekiwi@{robot_ip}", command]
+        
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
+        
+        return {
+            "success": result.returncode == 0,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+            "command": command,
+            "robot_ip": robot_ip
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="SSH command timed out")
+    except Exception as e:
+        print(f"SSH execution error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # WebSocket for real-time updates
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Set
