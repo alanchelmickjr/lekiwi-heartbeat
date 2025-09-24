@@ -967,8 +967,9 @@
                             deployments: [],
                             services: {},
                             type: robot.type === 'confirmed' ? 'LeKiwi Robot' : 'Raspberry Pi (Potential Robot)',
-                            robotType: robot.type === 'xlerobot' ? 'xlerobot' : 'lekiwi',  // Set robot type from discovery
-                            isConfirmed: robot.type === 'confirmed'
+                            robotType: robot.hostname?.includes('xlerobot') || robot.ip === '192.168.88.57' ? 'xlerobot' : 'lekiwi',
+                            isConfirmed: robot.type === 'confirmed',
+                            isXLE: robot.hostname?.includes('xlerobot') || robot.ip === '192.168.88.57'
                         });
                     });
                     
@@ -1394,10 +1395,16 @@
                                robot.status === 'error' ? 'offline' :
                                robot.status === 'unconfigured' ? 'offline' : 'offline';
             
+            // Detect XLERobot type - Advanced bimanual robot
+            const isXLE = robot.robotType === 'xlerobot' ||
+                         robot.id?.includes('xlerobot') ||
+                         robot.ip === '192.168.88.57';
+            
             card.innerHTML = `
                 <div class="robot-header">
                     <div class="robot-name">
                         ${robot.id && robot.id !== 'checking...' ? robot.id : `Robot ${robot.ip.split('.').pop()}`}
+                        ${isXLE ? '<span style="font-size: 0.8em; color: #ff6b6b; margin-left: 0.5rem;" title="XLE Robot - Bimanual Advanced">🤖✨ XLE</span>' : ''}
                         ${robot.type && robot.type.includes('Potential') ?
                             '<span style="font-size: 0.8em; color: var(--warning); margin-left: 0.5rem;">🥧</span>' : ''}
                     </div>
@@ -1425,14 +1432,30 @@
                         <div>Services:
                             ${robot.services.teleop ? '✅ teleop' : '❌ teleop'}
                             ${robot.services.lekiwi ? '✅ lekiwi' : '❌ lekiwi'}
+                            ${isXLE ? '<span style="color: #ff6b6b;">🤖 Bimanual Mode</span>' : ''}
                         </div>
                     ` : ''}
                     ${robot.installed ? `
                         <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); font-size: 0.85rem;">
-                            <div style="font-weight: 600; margin-bottom: 0.3rem;">Installation:</div>
-                            <div>${robot.installed.conda ? '✅' : '❌'} Miniconda ${!robot.installed.conda && robot.services?.lekiwi ? '⚠️ BROKEN!' : ''}</div>
-                            <div>${robot.installed.lerobot ? '✅' : '❌'} LeRobot</div>
-                            <div>${robot.installed.lekiwi ? '✅' : '❌'} LeKiwi Package</div>
+                            <div style="font-weight: 600; margin-bottom: 0.3rem;">Configuration:</div>
+                            ${isXLE ? `
+                                <div style="color: #ff6b6b;">
+                                    <div>🤖✨ XLERobot Advanced</div>
+                                    <div>🦾 Bimanual (2 arms)</div>
+                                    <div>📷 3 Cameras</div>
+                                    <div>🎮 Double Teleop Controls</div>
+                                </div>
+                            ` : `
+                                <div>🤖 Standard LeKiwi</div>
+                                <div>💪 Single arm</div>
+                                <div>📷 2 Cameras</div>
+                            `}
+                            <div style="margin-top: 0.3rem; padding-top: 0.3rem; border-top: 1px solid #222;">
+                                <div>${robot.installed.conda ? '✅' : '❌'} Miniconda ${!robot.installed.conda && robot.services?.lekiwi ? '⚠️ BROKEN!' : ''}</div>
+                                <div>${robot.installed.lerobot ? '✅' : '❌'} LeRobot</div>
+                                <div>${robot.installed.lekiwi ? '✅' : '❌'} LeKiwi Package</div>
+                                <div>✅ Frodobots ${isXLE ? '(Bimanual)' : '(Standard)'}</div>
+                            </div>
                             ${robot.services?.lekiwi && !robot.installed?.conda ?
                                 '<div style="color: var(--warning); margin-top: 0.3rem;">⚠️ Using system Python!</div>' : ''}
                         </div>
