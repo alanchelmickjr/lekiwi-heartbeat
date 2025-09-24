@@ -26,10 +26,10 @@ import logging
 logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
 def get_ssh_banner(ip, port=22, timeout=3):
-    """Get SSH banner from server - increased timeout for better detection"""
+    """Get SSH banner from server - reliable timeout"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        sock.settimeout(timeout)  # Balanced for reliability
         sock.connect((ip, port))
         
         # Read banner (usually first 255 bytes)
@@ -40,7 +40,7 @@ def get_ssh_banner(ip, port=22, timeout=3):
         return None
 
 def try_ssh_login(ip, username='lekiwi', password='lekiwi', timeout=5):
-    """Try to SSH login with known credentials - using correct password!"""
+    """Try to SSH login with known credentials - reliable timeout"""
     logging.debug(f"[SSH] Attempting login to {ip} as {username}...")
     try:
         client = paramiko.SSHClient()
@@ -82,10 +82,10 @@ def scan_host(ip):
         'model': None
     }
     
-    # First check if SSH port is open - increased timeout
+    # First check if SSH port is open - balanced timeout
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)  # Increased from 1 to 2 seconds
+        sock.settimeout(2)  # Balanced between speed and reliability
         if sock.connect_ex((ip, 22)) == 0:
             result['ssh_open'] = True
             logging.debug(f"[SSH] Port 22 open on {ip}")
@@ -112,9 +112,19 @@ def scan_host(ip):
         result['is_pi'] = login_result['is_pi']
         result['model'] = login_result['model']
         
-        # Check if hostname contains 'lekiwi', 'lerobot', or 'xlerobot'
+        # Improved hostname detection - check multiple patterns
         hostname_lower = result['hostname'].lower()
-        if 'lekiwi' in hostname_lower or 'lerobot' in hostname_lower or 'xlerobot' in hostname_lower:
+        robot_patterns = ['lekiwi', 'lerobot', 'xlerobot', 'raspberry', 'raspberrypi', 'pi']
+        
+        # Check if hostname matches any robot pattern
+        is_robot = any(pattern in hostname_lower for pattern in robot_patterns)
+        
+        # Also check if it starts/ends with 'pi' or contains numbers (common for Pi hostnames)
+        if not is_robot and (hostname_lower.startswith('pi') or hostname_lower.endswith('pi') or
+                             'pi-' in hostname_lower or '-pi' in hostname_lower):
+            is_robot = True
+            
+        if is_robot:
             result['is_robot'] = True
             logging.debug(f"[ROBOT] Confirmed robot at {ip}: {result['hostname']}")
             
@@ -136,13 +146,14 @@ def scan_host(ip):
     return result
 
 def discover_smart(network="192.168.88", start=1, end=254):
-    """Smart discovery of LeKiwi robots"""
+    """Smart discovery of LeKiwi robots with improved detection"""
     print(f"{CYAN}═══════════════════════════════════════════════════════════════{RESET}")
-    print(f"{CYAN}       🔍 LeKiwi Smart Robot Discovery Scanner 🔍{RESET}")
+    print(f"{CYAN}       🤖 LeKiwi Smart Robot Discovery v2.1 🤖{RESET}")
     print(f"{CYAN}═══════════════════════════════════════════════════════════════{RESET}\n")
     
-    print(f"Scanning: {network}.{start}-{end}")
-    print(f"Methods: SSH banner detection + credential testing\n")
+    print(f"📡 Network: {network}.{start}-{end} ({end-start+1} IPs)")
+    print(f"🔍 Methods: Fast parallel scan + SSH detection + Pi identification")
+    print(f"⚡ Speed: Optimized for fast discovery\n")
     
     robots = []
     ssh_hosts = []
@@ -153,23 +164,37 @@ def discover_smart(network="192.168.88", start=1, end=254):
     
     print(f"{YELLOW}Scanning {total} IPs with improved detection...{RESET}\n")
     
-    # Reduce max workers to avoid network overload
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    # Balanced workers for reliable parallel scanning
+    start_time = time.time()
+    with ThreadPoolExecutor(max_workers=15) as executor:  # Balanced for speed and reliability
         futures = {executor.submit(scan_host, ip): ip for ip in ips}
         
         completed = 0
         last_percent = 0
+        last_update = time.time()
+        
         for future in as_completed(futures):
             completed += 1
             result = future.result()
             
-            # Better progress reporting
+            # Better progress reporting with ETA
             percent = int((completed / total) * 100)
-            if percent != last_percent and percent % 10 == 0:
-                print(f"\n{YELLOW}Progress: {percent}% complete ({completed}/{total} IPs scanned){RESET}")
-                last_percent = percent
+            current_time = time.time()
+            elapsed = current_time - start_time
             
-            progress = f"[{completed}/{total}] ({percent}%) Scanning {result['ip']}..."
+            # Update every 5% or every 2 seconds
+            if percent != last_percent and (percent % 5 == 0 or current_time - last_update > 2):
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta = (total - completed) / rate if rate > 0 else 0
+                
+                # Show detailed progress
+                print(f"\n{YELLOW}Progress: {percent}% ({completed}/{total} IPs)")
+                print(f"  Speed: {rate:.1f} IPs/sec | ETA: {eta:.0f}s | Elapsed: {elapsed:.0f}s{RESET}")
+                last_percent = percent
+                last_update = current_time
+            
+            # Simple progress indicator
+            progress = f"[{completed}/{total}] Scanning {result['ip']}..."
             sys.stdout.write(f"\r{progress}")
             sys.stdout.flush()
             

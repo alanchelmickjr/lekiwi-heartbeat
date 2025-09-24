@@ -32,6 +32,15 @@ from comparison_engine import (
     compare_robot_to_baseline
 )
 
+# Import the new versioning system
+try:
+    from robot_versioning import RobotVersioning
+    versioning = RobotVersioning()
+    print("✅ Robot versioning system loaded")
+except ImportError as e:
+    print(f"⚠️ Robot versioning module not available: {e}")
+    versioning = None
+
 # Configuration
 CONFIG = {
     "server_port": int(os.getenv("DEPLOY_PORT", "8000")),
@@ -795,7 +804,7 @@ async def deploy_from_master(request: Request):
     try:
         data = await request.json()
         target_ip = data.get("target_ip")
-        master_ip = data.get("master_ip", "192.168.88.21")  # Default to .21 as master
+        master_ip = data.get("master_ip", "192.168.88.58")  # Changed to .58 since .21 is dead
         
         if not target_ip:
             raise HTTPException(status_code=400, detail="target_ip is required")
@@ -940,6 +949,101 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(f"Echo: {data}")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# Versioning System API Endpoints
+@app.post("/api/versioning/snapshot")
+async def create_version_snapshot(request: Request):
+    """Create a snapshot from a master robot"""
+    if not versioning:
+        raise HTTPException(status_code=500, detail="Versioning system not available")
+    
+    data = await request.json()
+    master_ip = data.get('master_ip', '192.168.88.58')  # Default to .58 since .21 is dead
+    version = data.get('version', 'latest')
+    description = data.get('description', 'Snapshot created from web UI')
+    
+    try:
+        snapshot_path = versioning.create_snapshot(master_ip, version, description)
+        return JSONResponse(content={
+            "success": True,
+            "snapshot_path": str(snapshot_path),
+            "version": version,
+            "message": f"Snapshot created from {master_ip}"
+        })
+    except Exception as e:
+        print(f"Snapshot creation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/versioning/list")
+async def list_version_snapshots():
+    """List all available version snapshots"""
+    if not versioning:
+        raise HTTPException(status_code=500, detail="Versioning system not available")
+    
+    try:
+        versions = versioning.list_versions()
+        return JSONResponse(content={
+            "success": True,
+            "versions": versions
+        })
+    except Exception as e:
+        print(f"Error listing versions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/versioning/deploy")
+async def deploy_version_to_robot(request: Request):
+    """Deploy a specific version to a robot using delta sync"""
+    if not versioning:
+        raise HTTPException(status_code=500, detail="Versioning system not available")
+    
+    data = await request.json()
+    target_ip = data.get('target_ip')
+    version = data.get('version', 'latest')
+    delta_only = data.get('delta_only', True)
+    
+    if not target_ip:
+        raise HTTPException(status_code=400, detail="Target IP required")
+    
+    try:
+        result = versioning.deploy_version(target_ip, version, delta_only=delta_only)
+        return JSONResponse(content={
+            "success": True,
+            "deployed_files": result,
+            "version": version,
+            "target": target_ip,
+            "message": f"Version {version} deployed to {target_ip}"
+        })
+    except Exception as e:
+        print(f"Deployment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/versioning/calculate-delta")
+async def calculate_version_delta(request: Request):
+    """Calculate delta between robot and version"""
+    if not versioning:
+        raise HTTPException(status_code=500, detail="Versioning system not available")
+    
+    data = await request.json()
+    target_ip = data.get('target_ip')
+    version = data.get('version', 'latest')
+    
+    if not target_ip:
+        raise HTTPException(status_code=400, detail="Target IP required")
+    
+    try:
+        delta = versioning.calculate_delta(target_ip, version)
+        return JSONResponse(content={
+            "success": True,
+            "delta": delta,
+            "version": version,
+            "target": target_ip,
+            "files_to_add": len(delta.get('files_to_add', [])),
+            "files_to_update": len(delta.get('files_to_update', [])),
+            "files_to_remove": len(delta.get('files_to_remove', []))
+        })
+    except Exception as e:
+        print(f"Delta calculation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Main entry point
 if __name__ == "__main__":
