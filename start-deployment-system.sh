@@ -115,24 +115,76 @@ export PACKAGES_DIR="$LOCAL_DEPLOY_DIR/packages"
 export REPOS_DIR="$LOCAL_DEPLOY_DIR/repos"
 export GITHUB_REPO="https://github.com/huggingface/lerobot.git"
 
-# Check if server is already running
+# Clean up hung services and stale files
+if [ "$DEV_MODE" = true ]; then
+    echo -e "${BLUE}Cleaning up previous sessions...${NC}"
+else
+    echo -e "${YELLOW}Cleaning up...${NC}"
+fi
+
+# Kill any hung uvicorn/python processes from previous runs (force with -9)
+pkill -9 -f "uvicorn server:app" 2>/dev/null || true
+pkill -9 -f "python.*server.py" 2>/dev/null || true
+pkill -9 -f "python.*smart_discover.py" 2>/dev/null || true
+pkill -9 -f "python3.*uvicorn" 2>/dev/null || true
+
+# Clean up stale temp files (with proper permissions)
+if [ -d "/tmp/robot_comparisons" ]; then
+    if [ "$DEV_MODE" = true ]; then
+        echo -e "${YELLOW}Cleaning up /tmp/robot_comparisons...${NC}"
+    fi
+    sudo rm -rf /tmp/robot_comparisons 2>/dev/null || rm -rf /tmp/robot_comparisons 2>/dev/null || true
+fi
+
+# Clean up discovery result files
+rm -f /tmp/discovery_results.json 2>/dev/null || true
+rm -f /tmp/smart_discovered.txt 2>/dev/null || true
+rm -f /tmp/discovered_robots.txt 2>/dev/null || true
+rm -f /tmp/lekiwi_fleet.json 2>/dev/null || true
+rm -f /tmp/robot_types.json 2>/dev/null || true
+
+# Create fresh directories
+mkdir -p /tmp/robot_comparisons 2>/dev/null || true
+
+# Check if server is already running on port 8000 and kill it
+# Use both lsof and fuser for better compatibility
 if lsof -i:8000 &> /dev/null; then
     if [ "$DEV_MODE" = true ]; then
         echo -e "${YELLOW}⚠${NC} Port 8000 is already in use"
         echo -e "Kill existing process? (y/n)"
         read -r response
         if [[ "$response" == "y" ]]; then
-            kill $(lsof -t -i:8000) 2>/dev/null || true
+            # Force kill all processes on port 8000
+            lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+            fuser -k 8000/tcp 2>/dev/null || true
             sleep 2
         else
             echo -e "${RED}Exiting...${NC}"
             exit 1
         fi
     else
-        # In production, silently kill the old process
-        kill $(lsof -t -i:8000) 2>/dev/null || true
-        sleep 1
+        # In production, forcefully kill all processes on port 8000
+        echo -e "${YELLOW}Cleaning up port 8000...${NC}"
+        lsof -ti:8000 | xargs kill -9 2>/dev/null || true
+        fuser -k 8000/tcp 2>/dev/null || true
+        sleep 2
     fi
+fi
+
+# Double check the port is free
+if lsof -i:8000 &> /dev/null; then
+    echo -e "${RED}Failed to free port 8000. Please manually kill the process:${NC}"
+    echo -e "${YELLOW}  sudo lsof -ti:8000 | xargs kill -9${NC}"
+    exit 1
+fi
+
+# Clean up any hung SSH processes to robots
+for ip in 21 57 58 62 64; do
+    pkill -f "ssh.*192.168.88.$ip" 2>/dev/null || true
+done
+
+if [ "$DEV_MODE" = true ]; then
+    echo -e "${GREEN}✓${NC} Cleanup complete"
 fi
 
 # Start the deployment server
@@ -145,11 +197,11 @@ if [ "$DEV_MODE" = true ]; then
     echo -e "📊 Health Check: ${GREEN}http://localhost:8000/health${NC}"
     echo ""
     echo -e "🤖 Known Robots:"
-    echo -e "   • ${YELLOW}192.168.88.21${NC} (lekiwi_67222140)"
-    echo -e "   • ${YELLOW}192.168.88.57${NC} (lekiwi_67223052)"
-    echo -e "   • ${YELLOW}192.168.88.58${NC} (lekiwi_672230e8)"
-    echo -e "   • ${YELLOW}192.168.88.62${NC} (lekiwi_6722309c)"
-    echo -e "   • ${YELLOW}192.168.88.64${NC} (lekiwi_672230be)"
+    echo -e "   • ${YELLOW}192.168.88.21${NC} (offline)"
+    echo -e "   • ${YELLOW}192.168.88.57${NC} (xlerobot1 - ${RED}Bimanual/3-cam${NC})"
+    echo -e "   • ${YELLOW}192.168.88.58${NC} (lekiwi5)"
+    echo -e "   • ${YELLOW}192.168.88.62${NC} (lekiwi5)"
+    echo -e "   • ${YELLOW}192.168.88.64${NC} (lekiwi5)"
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}Press Ctrl+C to stop the server${NC}"
