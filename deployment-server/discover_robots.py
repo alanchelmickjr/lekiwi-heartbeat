@@ -32,7 +32,7 @@ def check_ssh_port(ip, timeout=1):
 def get_hostname(ip):
     """Get hostname via SSH"""
     try:
-        cmd = f"sshpass -p '1234' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 lekiwi@{ip} hostname 2>/dev/null"
+        cmd = f"sshpass -p 'lekiwi' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=2 lekiwi@{ip} hostname 2>/dev/null"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3)
         if result.returncode == 0:
             return result.stdout.strip()
@@ -47,7 +47,8 @@ def scan_ip(ip):
     
     if check_ssh_port(ip):
         hostname = get_hostname(ip)
-        if hostname and 'lekiwi' in hostname.lower():
+        # Check for both 'lekiwi' and 'lerobot' in hostname
+        if hostname and ('lekiwi' in hostname.lower() or 'lerobot' in hostname.lower()):
             return {'ip': ip, 'hostname': hostname, 'status': 'robot'}
         else:
             return {'ip': ip, 'hostname': hostname, 'status': 'ssh_open'}

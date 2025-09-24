@@ -849,7 +849,7 @@
             fleet.get('status').put(fleetStatus);
         }
 
-        // Discover robots using the smart_discover.py script
+        // Discover robots using the smart_discover.py script with better parsing
         async function discoverRobots() {
             if (scanning) return;
             
@@ -871,9 +871,15 @@
             const startIP = parseInt(baseParts[3]);
             const endIP = parseInt(endRange) || 254;
             
+            // Show scanning progress
+            const totalIPs = endIP - startIP + 1;
+            document.getElementById('scanning-status').innerHTML =
+                `<span class="loading-dots">Scanning ${totalIPs} IPs</span>`;
+            
             try {
-                // Run the smart discovery script
-                document.getElementById('scanning-status').textContent = 'Running smart discovery scan...';
+                // Run the smart discovery script with progress monitoring
+                console.log(`Starting discovery scan: ${startIP}-${endIP}`);
+                document.getElementById('scanning-status').textContent = `Scanning network (${totalIPs} IPs)...`;
                 
                 const response = await fetch(`${API_URL}/api/execute`, {
                     method: 'POST',
@@ -886,33 +892,83 @@
                 
                 if (response.ok) {
                     const result = await response.json();
-                    console.log('Discovery output:', result.output);
+                    console.log('Discovery completed, parsing results...');
                     
-                    // Parse the output to find discovered robots
-                    const lines = result.output.split('\n');
-                    const foundRobots = [];
-                    
-                    lines.forEach(line => {
-                        // Look for IP addresses in the output
-                        const ipMatch = line.match(/(\d+\.\d+\.\d+\.\d+)/);
-                        if (ipMatch && (line.includes('Raspberry Pi') || line.includes('ROBOT') || line.includes('SSH'))) {
-                            const ip = ipMatch[1];
-                            if (!robots.has(ip)) {
-                                foundRobots.push(ip);
-                            }
+                    // First try to read the structured JSON file
+                    let foundRobots = [];
+                    try {
+                        const jsonResponse = await fetch(`${API_URL}/api/execute`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                command: 'cat',
+                                args: ['/tmp/discovery_results.json']
+                            })
+                        });
+                        
+                        if (jsonResponse.ok) {
+                            const jsonResult = await jsonResponse.json();
+                            const discoveryData = JSON.parse(jsonResult.output);
+                            
+                            // Add confirmed robots
+                            discoveryData.robots.forEach(robot => {
+                                if (!robots.has(robot.ip)) {
+                                    foundRobots.push({
+                                        ip: robot.ip,
+                                        hostname: robot.hostname,
+                                        type: 'confirmed'
+                                    });
+                                }
+                            });
+                            
+                            // Add potential robots (Raspberry Pis)
+                            discoveryData.potential_robots.forEach(robot => {
+                                if (!robots.has(robot.ip)) {
+                                    foundRobots.push({
+                                        ip: robot.ip,
+                                        hostname: robot.hostname,
+                                        type: 'raspberry_pi'
+                                    });
+                                }
+                            });
+                            
+                            console.log(`Found ${foundRobots.length} robots from JSON`);
                         }
-                    });
+                    } catch (jsonError) {
+                        console.log('Could not parse JSON, falling back to text parsing');
+                        
+                        // Fallback to parsing text output
+                        const lines = result.output.split('\n');
+                        lines.forEach(line => {
+                            const ipMatch = line.match(/(\d+\.\d+\.\d+\.\d+)/);
+                            if (ipMatch && (line.includes('Raspberry Pi') || line.includes('ROBOT'))) {
+                                const ip = ipMatch[1];
+                                if (!robots.has(ip)) {
+                                    foundRobots.push({
+                                        ip: ip,
+                                        hostname: 'unknown',
+                                        type: line.includes('ROBOT') ? 'confirmed' : 'raspberry_pi'
+                                    });
+                                }
+                            }
+                        });
+                    }
                     
-                    // Add discovered robots
-                    foundRobots.forEach(ip => {
-                        robots.set(ip, {
-                            ip: ip,
-                            id: `checking...`,  // Will get actual device ID from check
+                    // Add discovered robots with proper type information
+                    document.getElementById('scanning-status').textContent =
+                        `Found ${foundRobots.length} devices, checking status...`;
+                    
+                    foundRobots.forEach(robot => {
+                        robots.set(robot.ip, {
+                            ip: robot.ip,
+                            id: robot.hostname !== 'unknown' ? robot.hostname : `checking...`,
                             status: 'discovered',
                             version: 'checking...',
                             deployments: [],
                             services: {},
-                            type: 'Raspberry Pi'
+                            type: robot.type === 'confirmed' ? 'LeKiwi Robot' : 'Raspberry Pi (Potential Robot)',
+                            robotType: robot.type === 'xlerobot' ? 'xlerobot' : 'lekiwi',  // Set robot type from discovery
+                            isConfirmed: robot.type === 'confirmed'
                         });
                     });
                     
@@ -932,11 +988,13 @@
                     }
                     
                     document.getElementById('scanning-status').textContent =
-                        `Discovery complete: Found ${foundRobots.length} new robots`;
+                        `Discovery complete: Found ${foundRobots.length} robots. Checking status...`;
                     
-                    // Now check status of all robots
+                    // Update grid immediately to show discovered robots
                     updateRobotGrid();
-                    checkRobots();
+                    
+                    // Check robots in parallel for faster results
+                    checkRobotsParallel();
                     
                 } else {
                     document.getElementById('scanning-status').textContent = 'Discovery failed';
@@ -1230,15 +1288,57 @@
             return null;
         }
 
-        // Check all known robots
+        // Check all known robots in parallel with progress updates
         async function checkRobots() {
-            if (scanning || checkingInProgress) return;  // Don't check if we're scanning or already checking
+            if (scanning || checkingInProgress) return;
             
             checkingInProgress = true;
             try {
                 const promises = Array.from(robots.keys()).map(ip => checkSingleRobot(ip, true));
                 await Promise.allSettled(promises);
                 updateRobotGrid();
+            } finally {
+                checkingInProgress = false;
+            }
+        }
+        
+        // New function for parallel checking with progress
+        async function checkRobotsParallel() {
+            if (scanning || checkingInProgress) return;
+            
+            checkingInProgress = true;
+            const totalRobots = robots.size;
+            let completed = 0;
+            
+            document.getElementById('scanning-status').textContent =
+                `Checking ${totalRobots} robots in parallel...`;
+            
+            try {
+                // Check all robots in parallel
+                const promises = Array.from(robots.keys()).map(async (ip) => {
+                    const result = await checkSingleRobot(ip, true);
+                    completed++;
+                    
+                    // Update progress
+                    const percent = Math.round((completed / totalRobots) * 100);
+                    document.getElementById('scanning-status').textContent =
+                        `Checking robots: ${completed}/${totalRobots} (${percent}%)`;
+                    
+                    // Update grid immediately for each completed check
+                    updateRobotGrid();
+                    
+                    return result;
+                });
+                
+                await Promise.allSettled(promises);
+                
+                // Final status update
+                const onlineCount = Array.from(robots.values()).filter(r =>
+                    r.status === 'online' || r.status === 'partial').length;
+                
+                document.getElementById('scanning-status').textContent =
+                    `Complete: ${onlineCount} online, ${totalRobots - onlineCount} offline/unconfigured`;
+                    
             } finally {
                 checkingInProgress = false;
             }
@@ -1296,10 +1396,15 @@
             
             card.innerHTML = `
                 <div class="robot-header">
-                    <div class="robot-name">${robot.id && robot.id !== 'checking...' ? robot.id : `Robot ${robot.ip.split('.').pop()}`}</div>
+                    <div class="robot-name">
+                        ${robot.id && robot.id !== 'checking...' ? robot.id : `Robot ${robot.ip.split('.').pop()}`}
+                        ${robot.type && robot.type.includes('Potential') ?
+                            '<span style="font-size: 0.8em; color: var(--warning); margin-left: 0.5rem;">🥧</span>' : ''}
+                    </div>
                     <div class="robot-status">
                         <span class="status-dot ${statusClass}"></span>
-                        <span>${robot.status}</span>
+                        <span>${robot.status === 'checking' ?
+                            '<span class="loading-dots">checking</span>' : robot.status}</span>
                         ${robot.status === 'online' || robot.status === 'partial' || robot.status === 'checking' ? `
                             <button class="btn-ssh" onclick="openSSH('${robot.ip}', '${robot.id}'); event.stopPropagation();" title="SSH into robot">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">

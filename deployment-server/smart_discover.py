@@ -20,8 +20,13 @@ BLUE = '\033[94m'
 CYAN = '\033[96m'
 RESET = '\033[0m'
 
-def get_ssh_banner(ip, port=22, timeout=2):
-    """Get SSH banner from server"""
+# Add diagnostic logging
+import json
+import logging
+logging.basicConfig(level=logging.DEBUG, format='%(message)s')
+
+def get_ssh_banner(ip, port=22, timeout=3):
+    """Get SSH banner from server - increased timeout for better detection"""
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -34,8 +39,9 @@ def get_ssh_banner(ip, port=22, timeout=2):
     except:
         return None
 
-def try_ssh_login(ip, username='lekiwi', password='1234', timeout=3):
-    """Try to SSH login with known credentials"""
+def try_ssh_login(ip, username='lekiwi', password='lekiwi', timeout=5):
+    """Try to SSH login with known credentials - using correct password!"""
+    logging.debug(f"[SSH] Attempting login to {ip} as {username}...")
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -76,12 +82,13 @@ def scan_host(ip):
         'model': None
     }
     
-    # First check if SSH port is open
+    # First check if SSH port is open - increased timeout
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
+        sock.settimeout(2)  # Increased from 1 to 2 seconds
         if sock.connect_ex((ip, 22)) == 0:
             result['ssh_open'] = True
+            logging.debug(f"[SSH] Port 22 open on {ip}")
         sock.close()
     except:
         pass
@@ -105,9 +112,26 @@ def scan_host(ip):
         result['is_pi'] = login_result['is_pi']
         result['model'] = login_result['model']
         
-        # Check if hostname contains 'lekiwi'
-        if 'lekiwi' in result['hostname'].lower():
+        # Check if hostname contains 'lekiwi', 'lerobot', or 'xlerobot'
+        hostname_lower = result['hostname'].lower()
+        if 'lekiwi' in hostname_lower or 'lerobot' in hostname_lower or 'xlerobot' in hostname_lower:
             result['is_robot'] = True
+            logging.debug(f"[ROBOT] Confirmed robot at {ip}: {result['hostname']}")
+            
+            # Detect if it's an XLE robot (check for XLE software or .57 IP)
+            if 'xlerobot' in hostname_lower or ip.endswith('.57'):
+                result['robot_type'] = 'xlerobot'
+            else:
+                result['robot_type'] = 'lekiwi'
+    else:
+        # Even if login fails, we may have detected it's a Pi from the banner
+        logging.debug(f"[SSH] Login failed for {ip}: {login_result.get('reason', 'unknown')}")
+        # Try to get hostname via other means (reverse DNS or simple probe)
+        try:
+            import socket as sock
+            result['hostname'] = sock.gethostbyaddr(ip)[0]
+        except:
+            result['hostname'] = f"pi_{ip.split('.')[-1]}" if result['is_pi'] else None
     
     return result
 
@@ -127,38 +151,62 @@ def discover_smart(network="192.168.88", start=1, end=254):
     ips = [f"{network}.{i}" for i in range(start, end + 1)]
     total = len(ips)
     
-    print(f"{YELLOW}Scanning {total} IPs...{RESET}\n")
+    print(f"{YELLOW}Scanning {total} IPs with improved detection...{RESET}\n")
     
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    # Reduce max workers to avoid network overload
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(scan_host, ip): ip for ip in ips}
         
         completed = 0
+        last_percent = 0
         for future in as_completed(futures):
             completed += 1
             result = future.result()
             
-            # Update progress
-            progress = f"[{completed}/{total}] Scanning..."
+            # Better progress reporting
+            percent = int((completed / total) * 100)
+            if percent != last_percent and percent % 10 == 0:
+                print(f"\n{YELLOW}Progress: {percent}% complete ({completed}/{total} IPs scanned){RESET}")
+                last_percent = percent
+            
+            progress = f"[{completed}/{total}] ({percent}%) Scanning {result['ip']}..."
             sys.stdout.write(f"\r{progress}")
             sys.stdout.flush()
             
             # Process results
             if result['ssh_open']:
                 # Clear line for important output
-                sys.stdout.write(f"\r{' ' * 50}\r")
+                sys.stdout.write(f"\r{' ' * 80}\r")
                 
                 if result['is_robot']:
                     robots.append(result)
-                    print(f"{GREEN}🤖 ROBOT: {result['ip']} - {result['hostname']}")
+                    robot_type = result.get('robot_type', 'unknown')
+                    if robot_type == 'xlerobot':
+                        print(f"{CYAN}🤖 XLE ROBOT FOUND: {result['ip']} - {result['hostname']}")
+                    else:
+                        print(f"{GREEN}🤖 LEKIWI ROBOT FOUND: {result['ip']} - {result['hostname']}")
                     if result['model']:
-                        print(f"   Model: {result['model']}{RESET}")
+                        print(f"   Model: {result['model']}")
+                    print(f"   Type: {robot_type.upper()}{RESET}")
                 elif result['is_pi']:
+                    # Treat ALL Raspberry Pis as potential robots - even if auth failed!
                     potential_pis.append(result)
-                    print(f"{CYAN}🥧 Raspberry Pi: {result['ip']} - {result['hostname'] or 'unknown'}{RESET}")
+                    print(f"{CYAN}🥧 Raspberry Pi DETECTED: {result['ip']} - {result.get('hostname', 'auth_failed')}")
+                    if result.get('banner'):
+                        print(f"   Banner: {result['banner'][:60]}")
+                    print(f"   {YELLOW}(Likely a robot - needs credential check){RESET}")
+                elif result.get('banner'):
+                    # Check if banner suggests it might be a Pi we missed
+                    if 'debian' in result['banner'].lower() or 'raspbian' in result['banner'].lower():
+                        result['is_pi'] = True  # Mark as Pi based on banner
+                        potential_pis.append(result)
+                        print(f"{CYAN}🥧 Possible Raspberry Pi: {result['ip']} (Debian-based)")
+                        print(f"   {YELLOW}Banner: {result['banner'][:60]}{RESET}")
+                    else:
+                        ssh_hosts.append(result)
+                        logging.debug(f"[SSH] Non-Pi host: {result['ip']} - {result.get('hostname', 'unknown')}")
                 else:
                     ssh_hosts.append(result)
-                    if result['hostname']:
-                        print(f"{YELLOW}📡 SSH Host: {result['ip']} - {result['hostname']}{RESET}")
                 
                 # Show progress again
                 sys.stdout.write(f"{progress}")
@@ -207,9 +255,24 @@ def discover_smart(network="192.168.88", start=1, end=254):
         print(f"{CYAN}   They have SSH but different hostnames. These are likely your robots:{RESET}")
         for p in potential_pis:
             print(f"   • {p['ip']}")
-        print(f"\n{CYAN}   You can add them manually or rename their hostnames to include 'lekiwi'{RESET}")
+        print(f"\n{CYAN}   These will be treated as robots and auto-configured!{RESET}")
     
-    return robots + potential_pis  # Return both confirmed and potential robots
+    # Write structured JSON output for better parsing
+    all_discovered = robots + potential_pis
+    json_output = {
+        "robots": [{"ip": r['ip'], "hostname": r.get('hostname', 'unknown'), "type": r.get('robot_type', 'lekiwi'), "model": r.get('model', '')} for r in robots],
+        "potential_robots": [{"ip": p['ip'], "hostname": p.get('hostname', 'unknown'), "type": "raspberry_pi"} for p in potential_pis],
+        "other_ssh": [{"ip": h['ip'], "hostname": h.get('hostname', 'unknown'), "type": "ssh_host"} for h in ssh_hosts[:5]],
+        "total_found": len(all_discovered)
+    }
+    
+    # Write JSON output to file for web interface to parse
+    with open("/tmp/discovery_results.json", "w") as f:
+        json.dump(json_output, f, indent=2)
+    
+    print(f"\n{GREEN}Discovery results saved to /tmp/discovery_results.json{RESET}")
+    
+    return all_discovered  # Return both confirmed and potential robots
 
 if __name__ == "__main__":
     # Run smart discovery
