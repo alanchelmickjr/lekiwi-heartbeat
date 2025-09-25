@@ -1341,6 +1341,31 @@ async def get_camera_thumbnail(robot_ip: str):
             "timestamp": time.time()
         })
 
+@app.get("/api/robot/{robot_ip}/type")
+async def get_robot_type(robot_ip: str):
+    """Get robot type (lekiwi vs xlerobot)"""
+    try:
+        from detect_robot_type import detect_robot_type, get_robot_capabilities
+        
+        robot_type = detect_robot_type(robot_ip)
+        capabilities = get_robot_capabilities(robot_ip)
+        
+        return JSONResponse(content={
+            "success": True,
+            "type": robot_type,
+            "capabilities": capabilities,
+            "robot_ip": robot_ip
+        })
+        
+    except Exception as e:
+        print(f"Robot type detection error for {robot_ip}: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "type": "unknown",
+            "error": str(e),
+            "robot_ip": robot_ip
+        })
+
 @app.get("/api/robot/{robot_ip}/teleoperation-status")
 async def get_teleoperation_status(robot_ip: str):
     """Check if robot is being teleoperated"""
