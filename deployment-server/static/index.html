@@ -797,6 +797,26 @@
         let refreshInterval = null;
         let cameraRefreshInterval = null;
         let teleopCheckInterval = null;
+        
+        // Performance optimization state
+        let cameraUpdatesEnabled = true;
+        let teleopUpdatesEnabled = true;
+        let visibleRobots = new Set();
+        const requestQueue = [];
+        let activeRequests = 0;
+        const MAX_CONCURRENT_REQUESTS = 2; // Limit concurrent API calls
+        const cameraCache = new Map(); // Cache camera images
+        const CAMERA_CACHE_TTL = 45000; // 45 seconds cache TTL
+        const failedRequests = new Map(); // Track failed requests for backoff
+        
+        // Optimized refresh rates
+        const CAMERA_REFRESH_INTERVAL = 45000; // 45 seconds (was 10 seconds)
+        const TELEOP_CHECK_INTERVAL = 12000; // 12 seconds (was 3 seconds)
+        const ROBOT_STATUS_INTERVAL = 30000; // 30 seconds for robot status
+        const STAGGER_DELAY = 500; // 500ms between each robot update
+        
+        // Intersection Observer for visibility tracking
+        let visibilityObserver = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
@@ -811,6 +831,12 @@
                 clearInterval(refreshInterval);
                 refreshInterval = null;
             }
+            
+            // Initialize visibility observer for performance
+            initializeVisibilityObserver();
+            
+            // Add camera control buttons to the discovery section
+            addCameraControls();
             
             // Load robots from discovered fleet via API
             try {
@@ -891,16 +917,16 @@
                 checkRobots();
             }
             
-            // Auto-refresh every 30 seconds
+            // Auto-refresh every 30 seconds (unchanged)
             refreshInterval = setInterval(() => {
                 if (!scanning && !checkingInProgress && robots.size > 0) {
                     checkRobots();
                 }
-            }, 30000);
+            }, ROBOT_STATUS_INTERVAL);
             
-            // Start camera and teleoperation status refresh
-            startCameraRefresh();
-            startTeleopStatusCheck();
+            // Start optimized camera and teleoperation status refresh
+            startOptimizedCameraRefresh();
+            startOptimizedTeleopStatusCheck();
             
             // Clean up intervals on page unload or visibility change
             window.addEventListener('beforeunload', () => {
@@ -932,10 +958,13 @@
                         clearInterval(teleopCheckInterval);
                         teleopCheckInterval = null;
                     }
+                    // Clear request queue
+                    requestQueue.length = 0;
+                    activeRequests = 0;
                 } else {
                     // Resume checks when page becomes visible
-                    startCameraRefresh();
-                    startTeleopStatusCheck();
+                    startOptimizedCameraRefresh();
+                    startOptimizedTeleopStatusCheck();
                 }
             });
         });
@@ -1461,7 +1490,14 @@
             
             robots.forEach((robot, ip) => {
                 const card = createRobotCard(robot);
+                // Add data attribute for visibility tracking
+                card.dataset.robotIp = ip;
                 grid.appendChild(card);
+                
+                // Observe card for visibility
+                if (visibilityObserver) {
+                    visibilityObserver.observe(card);
+                }
                 
                 if (robot.status === 'online') {
                     onlineCount++;
@@ -1611,68 +1647,254 @@
             
             card.onclick = () => selectRobot(robot);
             
-            // Load camera thumbnails for this robot if online
-            if (robot.status === 'online' || robot.status === 'partial') {
-                loadCameraThumbnails(robot.ip, isXLE);
-                checkTeleopStatus(robot.ip);
-            }
+            // Only load camera thumbnails if robot is visible (will be handled by Intersection Observer)
+            // Initial load will happen when card becomes visible
             
             return card;
         }
-
-        // Load camera thumbnails for a robot
-        async function loadCameraThumbnails(robotIP, isXLE) {
+        
+        // Initialize Intersection Observer for visibility tracking
+        function initializeVisibilityObserver() {
+            const options = {
+                root: null,
+                rootMargin: '50px',
+                threshold: 0.1
+            };
+            
+            visibilityObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    const robotIP = entry.target.dataset.robotIp;
+                    if (robotIP) {
+                        if (entry.isIntersecting) {
+                            visibleRobots.add(robotIP);
+                        } else {
+                            visibleRobots.delete(robotIP);
+                        }
+                    }
+                });
+            }, options);
+        }
+        
+        // Add camera control buttons
+        function addCameraControls() {
+            const discoveryHeader = document.querySelector('.discovery-header');
+            if (!discoveryHeader) return;
+            
+            const controlsDiv = document.createElement('div');
+            controlsDiv.style.cssText = 'display: flex; gap: 10px; align-items: center;';
+            controlsDiv.innerHTML = `
+                <button class="btn btn-ghost btn-small" id="toggle-camera-updates" onclick="toggleCameraUpdates()">
+                    <span id="camera-toggle-icon">⏸</span> Camera Updates
+                </button>
+                <button class="btn btn-ghost btn-small" onclick="refreshVisibleCameras()">
+                    📷 Refresh Cameras
+                </button>
+                <button class="btn btn-ghost btn-small" id="toggle-teleop-updates" onclick="toggleTeleopUpdates()">
+                    <span id="teleop-toggle-icon">⏸</span> Teleop Checks
+                </button>
+            `;
+            
+            // Insert before the Discover button
+            const discoverBtn = document.getElementById('discover-btn');
+            if (discoverBtn && discoverBtn.parentNode) {
+                discoverBtn.parentNode.insertBefore(controlsDiv, discoverBtn);
+            }
+        }
+        
+        // Toggle camera updates
+        function toggleCameraUpdates() {
+            cameraUpdatesEnabled = !cameraUpdatesEnabled;
+            const icon = document.getElementById('camera-toggle-icon');
+            const btn = document.getElementById('toggle-camera-updates');
+            
+            if (cameraUpdatesEnabled) {
+                icon.textContent = '⏸';
+                btn.style.background = '';
+                startOptimizedCameraRefresh();
+                addLog('Camera updates resumed', 'info');
+            } else {
+                icon.textContent = '▶️';
+                btn.style.background = 'rgba(255, 100, 100, 0.1)';
+                if (cameraRefreshInterval) {
+                    clearInterval(cameraRefreshInterval);
+                    cameraRefreshInterval = null;
+                }
+                addLog('Camera updates paused', 'warning');
+            }
+        }
+        
+        // Toggle teleoperation updates
+        function toggleTeleopUpdates() {
+            teleopUpdatesEnabled = !teleopUpdatesEnabled;
+            const icon = document.getElementById('teleop-toggle-icon');
+            const btn = document.getElementById('toggle-teleop-updates');
+            
+            if (teleopUpdatesEnabled) {
+                icon.textContent = '⏸';
+                btn.style.background = '';
+                startOptimizedTeleopStatusCheck();
+                addLog('Teleoperation checks resumed', 'info');
+            } else {
+                icon.textContent = '▶️';
+                btn.style.background = 'rgba(255, 100, 100, 0.1)';
+                if (teleopCheckInterval) {
+                    clearInterval(teleopCheckInterval);
+                    teleopCheckInterval = null;
+                }
+                addLog('Teleoperation checks paused', 'warning');
+            }
+        }
+        
+        // Manually refresh visible cameras
+        function refreshVisibleCameras() {
+            addLog('Manually refreshing visible camera feeds...', 'info');
+            visibleRobots.forEach(robotIP => {
+                const robot = robots.get(robotIP);
+                if (robot && (robot.status === 'online' || robot.status === 'partial')) {
+                    const isXLE = robot.robotType === 'xlerobot' || robot.id?.toLowerCase().includes('xlerobot');
+                    queueRequest(() => loadCameraThumbnailsOptimized(robotIP, isXLE));
+                }
+            });
+        }
+        
+        // Request queue system
+        function queueRequest(requestFn) {
+            requestQueue.push(requestFn);
+            processQueue();
+        }
+        
+        // Process request queue with concurrency limit
+        async function processQueue() {
+            while (requestQueue.length > 0 && activeRequests < MAX_CONCURRENT_REQUESTS) {
+                const request = requestQueue.shift();
+                activeRequests++;
+                
+                try {
+                    await request();
+                } catch (error) {
+                    console.error('Request failed:', error);
+                } finally {
+                    activeRequests--;
+                    // Process next request after a short delay
+                    setTimeout(() => processQueue(), STAGGER_DELAY);
+                }
+            }
+        }
+        
+        // Optimized camera thumbnail loading with caching
+        async function loadCameraThumbnailsOptimized(robotIP, isXLE) {
+            // Skip if robot is not visible and not selected
+            if (!visibleRobots.has(robotIP) && selectedRobot !== robotIP) {
+                return;
+            }
+            
+            // Check cache first
+            const cacheKey = `camera-${robotIP}`;
+            const cached = cameraCache.get(cacheKey);
+            if (cached && (Date.now() - cached.timestamp < CAMERA_CACHE_TTL)) {
+                updateCameraImages(robotIP, cached.data, isXLE);
+                return;
+            }
+            
+            // Implement exponential backoff for failed requests
+            const failureCount = failedRequests.get(robotIP) || 0;
+            if (failureCount > 0) {
+                const backoffDelay = Math.min(1000 * Math.pow(2, failureCount), 30000);
+                const lastFailure = failedRequests.get(`${robotIP}-timestamp`) || 0;
+                if (Date.now() - lastFailure < backoffDelay) {
+                    return; // Skip this request due to backoff
+                }
+            }
+            
             try {
-                const response = await fetch(`${API_URL}/api/robot/${robotIP}/camera-thumbnail`);
+                const response = await fetch(`${API_URL}/api/robot/${robotIP}/camera-thumbnail`, {
+                    signal: AbortSignal.timeout(5000) // 5 second timeout
+                });
+                
                 if (response.ok) {
                     const data = await response.json();
                     if (data.success && data.thumbnails) {
-                        if (data.robot_type === 'xlerobot' || isXLE) {
-                            // XLE Robot: Update RealSense and claw cameras
-                            if (data.thumbnails.realsense) {
-                                const realsenseImg = document.getElementById(`camera-realsense-${robotIP.replace(/\./g, '-')}`);
-                                if (realsenseImg) {
-                                    realsenseImg.src = data.thumbnails.realsense;
-                                }
-                            }
-                            if (data.thumbnails.claw1) {
-                                const claw1Img = document.getElementById(`camera-claw1-${robotIP.replace(/\./g, '-')}`);
-                                if (claw1Img) {
-                                    claw1Img.src = data.thumbnails.claw1;
-                                }
-                            }
-                            if (data.thumbnails.claw2) {
-                                const claw2Img = document.getElementById(`camera-claw2-${robotIP.replace(/\./g, '-')}`);
-                                if (claw2Img) {
-                                    claw2Img.src = data.thumbnails.claw2;
-                                }
-                            }
-                        } else {
-                            // Lekiwi Robot: Update front and wrist cameras
-                            if (data.thumbnails.front) {
-                                const frontImg = document.getElementById(`camera-front-${robotIP.replace(/\./g, '-')}`);
-                                if (frontImg) {
-                                    frontImg.src = data.thumbnails.front;
-                                }
-                            }
-                            if (data.thumbnails.wrist) {
-                                const wristImg = document.getElementById(`camera-wrist-${robotIP.replace(/\./g, '-')}`);
-                                if (wristImg) {
-                                    wristImg.src = data.thumbnails.wrist;
-                                }
-                            }
-                        }
+                        // Cache successful response
+                        cameraCache.set(cacheKey, {
+                            timestamp: Date.now(),
+                            data: data
+                        });
+                        
+                        // Reset failure count on success
+                        failedRequests.delete(robotIP);
+                        failedRequests.delete(`${robotIP}-timestamp`);
+                        
+                        updateCameraImages(robotIP, data, isXLE);
                     }
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
                 }
             } catch (error) {
                 console.log(`Failed to load camera thumbnails for ${robotIP}:`, error);
+                
+                // Track failure for exponential backoff
+                const currentFailures = failedRequests.get(robotIP) || 0;
+                failedRequests.set(robotIP, currentFailures + 1);
+                failedRequests.set(`${robotIP}-timestamp`, Date.now());
+            }
+        }
+        
+        // Update camera images in DOM
+        function updateCameraImages(robotIP, data, isXLE) {
+            if (data.robot_type === 'xlerobot' || isXLE) {
+                // XLE Robot: Update RealSense and claw cameras
+                if (data.thumbnails.realsense) {
+                    const realsenseImg = document.getElementById(`camera-realsense-${robotIP.replace(/\./g, '-')}`);
+                    if (realsenseImg) {
+                        realsenseImg.src = data.thumbnails.realsense;
+                    }
+                }
+                if (data.thumbnails.claw1) {
+                    const claw1Img = document.getElementById(`camera-claw1-${robotIP.replace(/\./g, '-')}`);
+                    if (claw1Img) {
+                        claw1Img.src = data.thumbnails.claw1;
+                    }
+                }
+                if (data.thumbnails.claw2) {
+                    const claw2Img = document.getElementById(`camera-claw2-${robotIP.replace(/\./g, '-')}`);
+                    if (claw2Img) {
+                        claw2Img.src = data.thumbnails.claw2;
+                    }
+                }
+            } else {
+                // Lekiwi Robot: Update front and wrist cameras
+                if (data.thumbnails.front) {
+                    const frontImg = document.getElementById(`camera-front-${robotIP.replace(/\./g, '-')}`);
+                    if (frontImg) {
+                        frontImg.src = data.thumbnails.front;
+                    }
+                }
+                if (data.thumbnails.wrist) {
+                    const wristImg = document.getElementById(`camera-wrist-${robotIP.replace(/\./g, '-')}`);
+                    if (wristImg) {
+                        wristImg.src = data.thumbnails.wrist;
+                    }
+                }
             }
         }
 
-        // Check teleoperation status for a robot
-        async function checkTeleopStatus(robotIP) {
+        // Load camera thumbnails for a robot (backward compatibility)
+        async function loadCameraThumbnails(robotIP, isXLE) {
+            return loadCameraThumbnailsOptimized(robotIP, isXLE);
+        }
+
+        // Optimized teleoperation status check
+        async function checkTeleopStatusOptimized(robotIP) {
+            // Skip if robot is not visible and not selected
+            if (!visibleRobots.has(robotIP) && selectedRobot !== robotIP) {
+                return;
+            }
+            
             try {
-                const response = await fetch(`${API_URL}/api/robot/${robotIP}/teleoperation-status`);
+                const response = await fetch(`${API_URL}/api/robot/${robotIP}/teleoperation-status`, {
+                    signal: AbortSignal.timeout(3000) // 3 second timeout
+                });
+                
                 if (response.ok) {
                     const data = await response.json();
                     const badge = document.getElementById(`teleop-${robotIP.replace(/\./g, '-')}`);
@@ -1701,57 +1923,91 @@
                 console.log(`Failed to check teleoperation status for ${robotIP}:`, error);
             }
         }
+        
+        // Check teleoperation status (backward compatibility)
+        async function checkTeleopStatus(robotIP) {
+            return checkTeleopStatusOptimized(robotIP);
+        }
 
-        // Start camera refresh interval
-        function startCameraRefresh() {
+        // Start optimized camera refresh with staggered updates
+        function startOptimizedCameraRefresh() {
+            if (!cameraUpdatesEnabled) return;
+            
             if (cameraRefreshInterval) {
                 clearInterval(cameraRefreshInterval);
             }
             
-            // Refresh cameras every 10 seconds
-            cameraRefreshInterval = setInterval(() => {
-                if (!document.hidden) {
-                    robots.forEach((robot, ip) => {
-                        if (robot.status === 'online' || robot.status === 'partial') {
+            // Staggered camera updates
+            const updateCameras = () => {
+                if (!document.hidden && cameraUpdatesEnabled) {
+                    let delay = 0;
+                    
+                    // Only update visible robots
+                    visibleRobots.forEach(robotIP => {
+                        const robot = robots.get(robotIP);
+                        if (robot && (robot.status === 'online' || robot.status === 'partial')) {
                             const isXLE = robot.robotType === 'xlerobot' || robot.id?.toLowerCase().includes('xlerobot');
-                            loadCameraThumbnails(ip, isXLE);
+                            
+                            // Stagger updates to avoid overwhelming the system
+                            setTimeout(() => {
+                                queueRequest(() => loadCameraThumbnailsOptimized(robotIP, isXLE));
+                            }, delay);
+                            
+                            delay += STAGGER_DELAY;
                         }
                     });
                 }
-            }, 10000);
+            };
             
-            // Initial load
-            robots.forEach((robot, ip) => {
-                if (robot.status === 'online' || robot.status === 'partial') {
-                    const isXLE = robot.robotType === 'xlerobot' || robot.id?.toLowerCase().includes('xlerobot');
-                    loadCameraThumbnails(ip, isXLE);
-                }
-            });
+            // Initial load for visible robots only
+            updateCameras();
+            
+            // Set up interval with optimized rate
+            cameraRefreshInterval = setInterval(updateCameras, CAMERA_REFRESH_INTERVAL);
         }
 
-        // Start teleoperation status check interval
-        function startTeleopStatusCheck() {
+        // Start optimized teleoperation status check
+        function startOptimizedTeleopStatusCheck() {
+            if (!teleopUpdatesEnabled) return;
+            
             if (teleopCheckInterval) {
                 clearInterval(teleopCheckInterval);
             }
             
-            // Check teleoperation status every 3 seconds
-            teleopCheckInterval = setInterval(() => {
-                if (!document.hidden) {
-                    robots.forEach((robot, ip) => {
-                        if (robot.status === 'online' || robot.status === 'partial') {
-                            checkTeleopStatus(ip);
+            // Staggered teleoperation checks
+            const checkTeleop = () => {
+                if (!document.hidden && teleopUpdatesEnabled) {
+                    let delay = 0;
+                    
+                    // Only check visible robots
+                    visibleRobots.forEach(robotIP => {
+                        const robot = robots.get(robotIP);
+                        if (robot && (robot.status === 'online' || robot.status === 'partial')) {
+                            // Stagger checks
+                            setTimeout(() => {
+                                queueRequest(() => checkTeleopStatusOptimized(robotIP));
+                            }, delay);
+                            
+                            delay += STAGGER_DELAY / 2; // Faster stagger for teleop checks
                         }
                     });
                 }
-            }, 3000);
+            };
             
             // Initial check
-            robots.forEach((robot, ip) => {
-                if (robot.status === 'online' || robot.status === 'partial') {
-                    checkTeleopStatus(ip);
-                }
-            });
+            checkTeleop();
+            
+            // Set up interval with optimized rate
+            teleopCheckInterval = setInterval(checkTeleop, TELEOP_CHECK_INTERVAL);
+        }
+        
+        // Backward compatibility wrapper functions
+        function startCameraRefresh() {
+            startOptimizedCameraRefresh();
+        }
+        
+        function startTeleopStatusCheck() {
+            startOptimizedTeleopStatusCheck();
         }
 
         // Select robot to view details
