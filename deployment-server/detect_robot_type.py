@@ -9,7 +9,7 @@ import json
 def detect_robot_type(robot_ip):
     """
     Detect if a robot is regular LeKiwi or XLERobot
-    Only .57 is confirmed XLERobot
+    XLERobot identified by hostname pattern containing 'xlerobot'
     Returns: 'xlerobot', 'lekiwi', 'lekiwi-lite', or 'unknown'
     """
     try:
@@ -19,10 +19,11 @@ def detect_robot_type(robot_ip):
         
         if result.returncode == 0 and result.stdout:
             hostname = result.stdout.strip().lower()
+            # XLERobot identified by hostname pattern
             if 'xlerobot' in hostname:
                 return 'xlerobot'
         
-        # Check binary size AND control library together
+        # Check binary size AND control library together for other robot types
         cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no lekiwi@{robot_ip} 'stat -c %s /opt/frodobots/teleop_agent 2>/dev/null; grep ctrl /opt/frodobots/teleop.ini 2>/dev/null'"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
         
@@ -40,15 +41,11 @@ def detect_robot_type(robot_ip):
             if binary_size > 5000000:  # > 5MB = Full LeKiwi
                 return 'lekiwi'
             elif binary_size < 2000000 and binary_size > 0:  # < 2MB
-                # Small binary - could be XLE or LeKiwi-lite
+                # Small binary - check for IK library
                 if '_ik' not in ctrl_lib:
-                    # No IK = likely XLE (but only .57 confirmed)
-                    if robot_ip == '192.168.88.57':
-                        return 'xlerobot'
-                    else:
-                        return 'lekiwi-lite'  # .64 has same setup but isn't XLE branded
+                    return 'lekiwi-lite'  # No IK = lite version
                 else:
-                    return 'lekiwi-lite'  # .62 has small binary WITH IK
+                    return 'lekiwi-lite'  # Has IK but small binary
                 
     except Exception as e:
         print(f"Error detecting robot type for {robot_ip}: {e}")
@@ -62,12 +59,12 @@ def get_robot_capabilities(robot_ip):
     """
     robot_type = detect_robot_type(robot_ip)
     
-    # Only .57 is confirmed XLERobot
-    is_xle = robot_ip == '192.168.88.57' or robot_type == 'xlerobot'
+    # XLERobot detected by hostname pattern
+    is_xle = robot_type == 'xlerobot'
     
     capabilities = {
         'ip': robot_ip,
-        'type': 'xlerobot' if is_xle else 'lekiwi',
+        'type': robot_type,  # Use actual detected type
         'arms': 2 if is_xle else 1,
         'cameras': 3 if is_xle else 2,
         'control_type': 'bimanual' if is_xle else 'single-arm',
@@ -77,7 +74,7 @@ def get_robot_capabilities(robot_ip):
     if is_xle:
         capabilities['features'] = [
             'Bimanual control (dual-arm)',
-            '3 cameras for enhanced vision',
+            '3 cameras for enhanced vision (RealSense + 2 claw cameras)',
             'Double teleop controls',
             'Advanced manipulation capabilities',
             'XLE Enhanced Robot'
@@ -85,7 +82,7 @@ def get_robot_capabilities(robot_ip):
     else:
         capabilities['features'] = [
             'Single-arm control',
-            '2 cameras (standard vision)',
+            '2 cameras (front + wrist)',
             'Standard teleop controls',
             'LeKiwi Robot'
         ]

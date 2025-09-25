@@ -12,6 +12,9 @@ import shutil
 import hashlib
 import asyncio
 import subprocess
+import base64
+import io
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
@@ -23,6 +26,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
+
+# For camera streaming - optional imports
+try:
+    import zmq
+    ZMQ_AVAILABLE = True
+except ImportError:
+    ZMQ_AVAILABLE = False
+    print("⚠️ ZMQ not available - camera streaming will use SSH fallback")
 
 # Import comparison engine
 from comparison_engine import (
@@ -322,18 +333,69 @@ async def get_fleet():
         with open(fleet_file, 'r') as f:
             return json.load(f)
     else:
-        # Return default fleet if file doesn't exist
-        return {
-            "robots": [
-                {"ip": "192.168.88.21", "hostname": "lekiwi_21", "status": "discovered", "type": "Raspberry Pi"},
-                {"ip": "192.168.88.57", "hostname": "lekiwi_57", "status": "discovered", "type": "Raspberry Pi"},
-                {"ip": "192.168.88.58", "hostname": "lekiwi_58", "status": "discovered", "type": "Raspberry Pi"},
-                {"ip": "192.168.88.62", "hostname": "lekiwi_62", "status": "discovered", "type": "Raspberry Pi"},
-                {"ip": "192.168.88.64", "hostname": "lekiwi_64", "status": "discovered", "type": "Raspberry Pi"}
-            ],
-            "total": 5,
-            "discovered_at": datetime.now().timestamp()
-        }
+        # Trigger discovery if fleet file doesn't exist
+        print("🔍 Fleet configuration not found. Running robot discovery...")
+        
+        try:
+            # Run smart discovery to find all robots
+            discovery_result = subprocess.run(
+                ["python3", "smart_discover.py"],
+                capture_output=True,
+                text=True,
+                timeout=60,  # 60 second timeout for discovery
+                cwd=Path(__file__).parent  # Run in deployment-server directory
+            )
+            
+            if discovery_result.returncode != 0:
+                print(f"⚠️ Discovery failed: {discovery_result.stderr}")
+            
+            # Check if discovery results exist
+            discovered_file = Path("/tmp/smart_discovered.txt")
+            if discovered_file.exists():
+                # Convert discovery results to fleet configuration
+                conversion_result = subprocess.run(
+                    ["python3", "add_discovered_robots.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd=Path(__file__).parent
+                )
+                
+                if conversion_result.returncode != 0:
+                    print(f"⚠️ Fleet conversion failed: {conversion_result.stderr}")
+                
+                # Try to read the fleet file again
+                if fleet_file.exists():
+                    with open(fleet_file, 'r') as f:
+                        fleet_data = json.load(f)
+                        print(f"✅ Discovered {fleet_data.get('total', 0)} robots")
+                        return fleet_data
+            
+            # If discovery failed or no robots found, return empty fleet
+            print("⚠️ No robots discovered")
+            return {
+                "robots": [],
+                "total": 0,
+                "discovered_at": datetime.now().timestamp(),
+                "error": "Discovery failed or no robots found"
+            }
+            
+        except subprocess.TimeoutExpired:
+            print("⚠️ Discovery timed out")
+            return {
+                "robots": [],
+                "total": 0,
+                "discovered_at": datetime.now().timestamp(),
+                "error": "Discovery timed out"
+            }
+        except Exception as e:
+            print(f"❌ Discovery error: {e}")
+            return {
+                "robots": [],
+                "total": 0,
+                "discovered_at": datetime.now().timestamp(),
+                "error": str(e)
+            }
 
 @app.get("/api/info")
 async def api_info():
@@ -1044,6 +1106,311 @@ async def calculate_version_delta(request: Request):
     except Exception as e:
         print(f"Delta calculation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# API endpoint to manually trigger discovery
+@app.post("/api/discover")
+async def trigger_discovery():
+    """Manually trigger robot discovery"""
+    try:
+        print("🔍 Manually triggering robot discovery...")
+        
+        # Clean up old discovery files
+        for file in ["/tmp/discovery_results.json", "/tmp/smart_discovered.txt",
+                     "/tmp/lekiwi_fleet.json", "/tmp/robot_types.json"]:
+            file_path = Path(file)
+            if file_path.exists():
+                file_path.unlink()
+        
+        # Run smart discovery
+        discovery_result = subprocess.run(
+            ["python3", "smart_discover.py"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=Path(__file__).parent
+        )
+        
+        if discovery_result.returncode != 0:
+            print(f"⚠️ Discovery failed: {discovery_result.stderr}")
+            raise HTTPException(status_code=500, detail="Discovery failed")
+        
+        # Convert discovery results to fleet configuration
+        discovered_file = Path("/tmp/smart_discovered.txt")
+        if discovered_file.exists():
+            conversion_result = subprocess.run(
+                ["python3", "add_discovered_robots.py"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=Path(__file__).parent
+            )
+            
+            if conversion_result.returncode != 0:
+                print(f"⚠️ Fleet conversion failed: {conversion_result.stderr}")
+        
+        # Read the fleet file
+        fleet_file = Path("/tmp/lekiwi_fleet.json")
+        if fleet_file.exists():
+            with open(fleet_file, 'r') as f:
+                fleet_data = json.load(f)
+                return {
+                    "status": "success",
+                    "message": f"Discovered {fleet_data.get('total', 0)} robots",
+                    "fleet": fleet_data
+                }
+        else:
+            return {
+                "status": "warning",
+                "message": "Discovery completed but no robots found",
+                "fleet": {
+                    "robots": [],
+                    "total": 0,
+                    "discovered_at": datetime.now().timestamp()
+                }
+            }
+            
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Discovery timed out")
+    except Exception as e:
+        print(f"❌ Discovery error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Camera Thumbnail API Endpoints
+@app.get("/api/robot/{robot_ip}/camera-thumbnail")
+async def get_camera_thumbnail(robot_ip: str):
+    """Get camera thumbnails from a robot (configuration based on robot type)"""
+    try:
+        thumbnails = {}
+        
+        # First detect robot type to determine camera configuration
+        from detect_robot_type import detect_robot_type
+        robot_type = detect_robot_type(robot_ip)
+        print(f"📷 Robot {robot_ip} detected as type: {robot_type}")
+        
+        # Method 1: Try ZMQ connection first if available
+        if ZMQ_AVAILABLE:
+            try:
+                context = zmq.Context()
+                socket = context.socket(zmq.PULL)
+                socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
+                socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
+                
+                # Connect to robot's ZMQ stream
+                socket.connect(f"tcp://{robot_ip}:5556")
+                
+                # Try to get frames from ZMQ
+                try:
+                    # Get a frame
+                    message = socket.recv_string()
+                    frame_data = json.loads(message)
+                    
+                    # Extract images based on robot type
+                    if robot_type == 'xlerobot':
+                        # XLE robot has RealSense + 2 claw cameras
+                        if 'realsense_camera' in frame_data:
+                            thumbnails['realsense'] = frame_data['realsense_camera']
+                        if 'claw1_camera' in frame_data:
+                            thumbnails['claw1'] = frame_data['claw1_camera']
+                        if 'claw2_camera' in frame_data:
+                            thumbnails['claw2'] = frame_data['claw2_camera']
+                    else:
+                        # Lekiwi robot has front + wrist cameras
+                        if 'front_camera' in frame_data:
+                            thumbnails['front'] = frame_data['front_camera']
+                        if 'wrist_camera' in frame_data:
+                            thumbnails['wrist'] = frame_data['wrist_camera']
+                    
+                    # If we got at least one image, return success
+                    if thumbnails:
+                        socket.close()
+                        context.term()
+                        return JSONResponse(content={
+                            "success": True,
+                            "method": "zmq",
+                            "robot_type": robot_type,
+                            "thumbnails": thumbnails,
+                            "timestamp": time.time()
+                        })
+                except zmq.error.Again:
+                    pass  # Timeout - try fallback
+                finally:
+                    socket.close()
+                    context.term()
+            except Exception as zmq_error:
+                print(f"ZMQ error for {robot_ip}: {zmq_error}")
+        
+        # Method 2: Fallback to SSH + ffmpeg capture
+        print(f"📷 Using SSH+ffmpeg fallback for {robot_ip} (type: {robot_type})")
+        
+        if robot_type == 'xlerobot':
+            # XLE Robot: 3 cameras (RealSense + 2 claw cameras)
+            # First, list available video devices to identify cameras
+            list_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ls -la /dev/video* 2>/dev/null | grep ^c'"
+            list_result = subprocess.run(["bash", "-c", list_cmd], capture_output=True, text=True, timeout=5)
+            
+            # RealSense is typically on /dev/video0 or /dev/video2 (depth), /dev/video4 (rgb)
+            # Try to capture RealSense RGB camera (usually /dev/video4 or /dev/video0)
+            for video_dev in ['/dev/video4', '/dev/video0', '/dev/video2']:
+                realsense_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+                try:
+                    result = subprocess.run(["bash", "-c", realsense_cmd], capture_output=True, timeout=10)
+                    if result.returncode == 0 and result.stdout:
+                        realsense_base64 = result.stdout.decode().replace('\n', '').strip()
+                        if realsense_base64:
+                            thumbnails['realsense'] = f"data:image/jpeg;base64,{realsense_base64}"
+                            break
+                except Exception as e:
+                    print(f"Failed to capture RealSense from {video_dev}: {e}")
+            
+            # Claw camera 1 (try /dev/video6 or /dev/video1)
+            for video_dev in ['/dev/video6', '/dev/video1']:
+                claw1_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+                try:
+                    result = subprocess.run(["bash", "-c", claw1_cmd], capture_output=True, timeout=10)
+                    if result.returncode == 0 and result.stdout:
+                        claw1_base64 = result.stdout.decode().replace('\n', '').strip()
+                        if claw1_base64:
+                            thumbnails['claw1'] = f"data:image/jpeg;base64,{claw1_base64}"
+                            break
+                except Exception as e:
+                    print(f"Failed to capture claw1 from {video_dev}: {e}")
+            
+            # Claw camera 2 (try /dev/video8 or /dev/video3)
+            for video_dev in ['/dev/video8', '/dev/video3']:
+                claw2_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+                try:
+                    result = subprocess.run(["bash", "-c", claw2_cmd], capture_output=True, timeout=10)
+                    if result.returncode == 0 and result.stdout:
+                        claw2_base64 = result.stdout.decode().replace('\n', '').strip()
+                        if claw2_base64:
+                            thumbnails['claw2'] = f"data:image/jpeg;base64,{claw2_base64}"
+                            break
+                except Exception as e:
+                    print(f"Failed to capture claw2 from {video_dev}: {e}")
+        
+        else:
+            # Lekiwi Robot: 2 cameras (front + wrist)
+            # Capture front camera (/dev/video0)
+            front_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i /dev/video0 -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+            
+            try:
+                result = subprocess.run(["bash", "-c", front_cmd], capture_output=True, timeout=10)
+                if result.returncode == 0 and result.stdout:
+                    front_base64 = result.stdout.decode().replace('\n', '').strip()
+                    if front_base64:
+                        thumbnails['front'] = f"data:image/jpeg;base64,{front_base64}"
+            except Exception as e:
+                print(f"Failed to capture front camera from {robot_ip}: {e}")
+            
+            # Capture wrist camera (/dev/video2)
+            wrist_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i /dev/video2 -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+            
+            try:
+                result = subprocess.run(["bash", "-c", wrist_cmd], capture_output=True, timeout=10)
+                if result.returncode == 0 and result.stdout:
+                    wrist_base64 = result.stdout.decode().replace('\n', '').strip()
+                    if wrist_base64:
+                        thumbnails['wrist'] = f"data:image/jpeg;base64,{wrist_base64}"
+            except Exception as e:
+                print(f"Failed to capture wrist camera from {robot_ip}: {e}")
+        
+        # Return results
+        if thumbnails:
+            return JSONResponse(content={
+                "success": True,
+                "method": "ssh_ffmpeg",
+                "robot_type": robot_type,
+                "thumbnails": thumbnails,
+                "timestamp": time.time()
+            })
+        else:
+            return JSONResponse(content={
+                "success": False,
+                "error": "No cameras available",
+                "robot_type": robot_type,
+                "thumbnails": {},
+                "timestamp": time.time()
+            })
+            
+    except Exception as e:
+        print(f"Camera thumbnail error for {robot_ip}: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": str(e),
+            "thumbnails": {},
+            "timestamp": time.time()
+        })
+
+@app.get("/api/robot/{robot_ip}/teleoperation-status")
+async def get_teleoperation_status(robot_ip: str):
+    """Check if robot is being teleoperated"""
+    try:
+        # Method 1: Check for teleoperate.py process
+        process_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'pgrep -f teleoperate.py || echo none'"
+        
+        process_result = subprocess.run(
+            ["bash", "-c", process_check_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        has_process = process_result.returncode == 0 and process_result.stdout.strip() != "none"
+        
+        # Method 2: Check if port 5558 is in use (teleoperation port)
+        port_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'netstat -tuln | grep :5558 || echo none'"
+        
+        port_result = subprocess.run(
+            ["bash", "-c", port_check_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        port_in_use = port_result.returncode == 0 and port_result.stdout.strip() != "none"
+        
+        # Method 3: Check systemctl status of teleop service
+        service_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'systemctl is-active teleop'"
+        
+        service_result = subprocess.run(
+            ["bash", "-c", service_check_cmd],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        service_active = service_result.stdout.strip() == "active"
+        
+        # Determine if teleoperated
+        is_teleoperated = has_process or port_in_use
+        
+        return JSONResponse(content={
+            "success": True,
+            "teleoperated": is_teleoperated,
+            "details": {
+                "process_running": has_process,
+                "port_5558_in_use": port_in_use,
+                "teleop_service_active": service_active,
+                "checked_at": datetime.now().isoformat()
+            },
+            "robot_ip": robot_ip
+        })
+        
+    except subprocess.TimeoutExpired:
+        return JSONResponse(content={
+            "success": False,
+            "teleoperated": False,
+            "error": "Connection timeout",
+            "robot_ip": robot_ip
+        })
+    except Exception as e:
+        print(f"Teleoperation status error for {robot_ip}: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "teleoperated": False,
+            "error": str(e),
+            "robot_ip": robot_ip
+        })
 
 # Main entry point
 if __name__ == "__main__":

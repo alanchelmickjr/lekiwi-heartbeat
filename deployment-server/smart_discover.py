@@ -128,8 +128,8 @@ def scan_host(ip):
             result['is_robot'] = True
             logging.debug(f"[ROBOT] Confirmed robot at {ip}: {result['hostname']}")
             
-            # Detect if it's an XLE robot (check for XLE software or .57 IP)
-            if 'xlerobot' in hostname_lower or ip.endswith('.57'):
+            # Detect if it's an XLE robot by hostname pattern only
+            if 'xlerobot' in hostname_lower:
                 result['robot_type'] = 'xlerobot'
             else:
                 result['robot_type'] = 'lekiwi'

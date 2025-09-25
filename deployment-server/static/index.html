@@ -135,7 +135,7 @@
         /* Robot Cards - Vercel Project Style */
         .robots-container {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
             gap: 1.5rem;
             margin-bottom: 2rem;
         }
@@ -148,6 +148,80 @@
             cursor: pointer;
             transition: all 0.3s ease;
             position: relative;
+        }
+
+        /* Camera preview styles */
+        .camera-preview {
+            display: flex;
+            gap: 0.5rem;
+            margin: 1rem 0;
+            padding: 0.5rem;
+            background: var(--bg-lighter);
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+
+        .camera-thumbnail {
+            flex: 1;
+            position: relative;
+            background: #000;
+            border-radius: 4px;
+            overflow: hidden;
+            height: 90px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .camera-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .camera-thumbnail .camera-label {
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .camera-unavailable {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-align: center;
+        }
+
+        /* Teleoperation badge */
+        .teleop-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: linear-gradient(135deg, #ff6b6b, #ff4444);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            animation: teleop-pulse 2s infinite;
+            z-index: 10;
+        }
+
+        @keyframes teleop-pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.9; transform: scale(1.05); }
+        }
+
+        .teleop-badge.hidden {
+            display: none;
         }
 
         .robot-card:hover {
@@ -625,9 +699,9 @@
                         <span id="scanning-status">Ready to scan</span>
                     </p>
                 </div>
-                <button class="btn" onclick="discoverRobots()">
+                <button class="btn" id="discover-btn" onclick="discoverRobots()">
                     <span id="scan-icon">🔍</span>
-                    Discover Robots
+                    <span id="scan-text">Discover Robots</span>
                 </button>
             </div>
             <div class="discovery-input">
@@ -721,6 +795,8 @@
         let scanning = false;
         let checkingInProgress = false;
         let refreshInterval = null;
+        let cameraRefreshInterval = null;
+        let teleopCheckInterval = null;
 
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
@@ -822,11 +898,23 @@
                 }
             }, 30000);
             
-            // Clean up interval on page unload or visibility change
+            // Start camera and teleoperation status refresh
+            startCameraRefresh();
+            startTeleopStatusCheck();
+            
+            // Clean up intervals on page unload or visibility change
             window.addEventListener('beforeunload', () => {
                 if (refreshInterval) {
                     clearInterval(refreshInterval);
                     refreshInterval = null;
+                }
+                if (cameraRefreshInterval) {
+                    clearInterval(cameraRefreshInterval);
+                    cameraRefreshInterval = null;
+                }
+                if (teleopCheckInterval) {
+                    clearInterval(teleopCheckInterval);
+                    teleopCheckInterval = null;
                 }
             });
             
@@ -835,6 +923,19 @@
                 if (document.hidden) {
                     checkingInProgress = false;
                     scanning = false;
+                    // Pause camera and teleoperation checks
+                    if (cameraRefreshInterval) {
+                        clearInterval(cameraRefreshInterval);
+                        cameraRefreshInterval = null;
+                    }
+                    if (teleopCheckInterval) {
+                        clearInterval(teleopCheckInterval);
+                        teleopCheckInterval = null;
+                    }
+                } else {
+                    // Resume checks when page becomes visible
+                    startCameraRefresh();
+                    startTeleopStatusCheck();
                 }
             });
         });
@@ -849,13 +950,33 @@
             fleet.get('status').put(fleetStatus);
         }
 
-        // Discover robots using the smart_discover.py script with better parsing
+        // Discover robots using the proper /api/discover endpoint with double-tap protection
         async function discoverRobots() {
-            if (scanning) return;
+            // Double-tap protection - if already scanning, just return
+            if (scanning) {
+                console.log('Discovery already in progress, ignoring duplicate click');
+                return;
+            }
+            
+            // Disable button immediately to prevent double-clicks
+            const discoverBtn = document.getElementById('discover-btn');
+            discoverBtn.disabled = true;
+            discoverBtn.style.opacity = '0.6';
+            discoverBtn.style.cursor = 'not-allowed';
             
             scanning = true;
-            document.getElementById('scan-icon').textContent = '⏳';
-            document.getElementById('scanning-status').textContent = 'Starting smart discovery...';
+            document.getElementById('scan-icon').textContent = '🔄';
+            document.getElementById('scan-text').textContent = 'Discovering...';
+            document.getElementById('scanning-status').innerHTML = '<span class="loading-dots">Starting smart discovery</span>';
+            
+            // Clear existing robots to show fresh discovery
+            robots.clear();
+            updateRobotGrid();
+            
+            // Add visual feedback that discovery is starting
+            setTimeout(() => {
+                document.getElementById('scanning-status').textContent = 'Initializing network scan...';
+            }, 500);
             
             const range = document.getElementById('ip-range').value;
             const [baseIP, endRange] = parseIPRange(range);
@@ -877,81 +998,55 @@
                 `<span class="loading-dots">Scanning ${totalIPs} IPs</span>`;
             
             try {
-                // Run the smart discovery script with progress monitoring
+                // Use the proper /api/discover endpoint which runs discovery dynamically
                 console.log(`Starting discovery scan: ${startIP}-${endIP}`);
                 document.getElementById('scanning-status').textContent = `Scanning network (${totalIPs} IPs)...`;
                 
-                const response = await fetch(`${API_URL}/api/execute`, {
+                // Add a small delay to show the UI is responding
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                document.getElementById('scanning-status').innerHTML =
+                    `<span style="color: #4fc3f7;">🚀 Running smart discovery on network 192.168.88.0/24...</span>`;
+                
+                // Call the /api/discover endpoint which performs fresh discovery
+                const response = await fetch(`${API_URL}/api/discover`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        command: 'bash',
-                        args: ['-c', `cd deployment-server && source venv/bin/activate && python3 smart_discover.py ${startIP} ${endIP}`]
-                    })
+                    body: JSON.stringify({})  // No parameters needed, it scans the full range
                 });
                 
                 if (response.ok) {
                     const result = await response.json();
-                    console.log('Discovery completed, parsing results...');
+                    console.log('Discovery completed:', result);
                     
-                    // First try to read the structured JSON file
+                    // Play a subtle success sound/animation
+                    document.getElementById('scan-icon').textContent = '✅';
+                    
+                    // Parse the fleet data from the response
                     let foundRobots = [];
-                    try {
-                        const jsonResponse = await fetch(`${API_URL}/api/execute`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                command: 'cat',
-                                args: ['/tmp/discovery_results.json']
-                            })
-                        });
-                        
-                        if (jsonResponse.ok) {
-                            const jsonResult = await jsonResponse.json();
-                            const discoveryData = JSON.parse(jsonResult.output);
-                            
-                            // Add confirmed robots
-                            discoveryData.robots.forEach(robot => {
-                                if (!robots.has(robot.ip)) {
-                                    foundRobots.push({
-                                        ip: robot.ip,
-                                        hostname: robot.hostname,
-                                        type: 'confirmed'
-                                    });
-                                }
-                            });
-                            
-                            // Add potential robots (Raspberry Pis)
-                            discoveryData.potential_robots.forEach(robot => {
-                                if (!robots.has(robot.ip)) {
-                                    foundRobots.push({
-                                        ip: robot.ip,
-                                        hostname: robot.hostname,
-                                        type: 'raspberry_pi'
-                                    });
-                                }
-                            });
-                            
-                            console.log(`Found ${foundRobots.length} robots from JSON`);
-                        }
-                    } catch (jsonError) {
-                        console.log('Could not parse JSON, falling back to text parsing');
-                        
-                        // Fallback to parsing text output
-                        const lines = result.output.split('\n');
-                        lines.forEach(line => {
-                            const ipMatch = line.match(/(\d+\.\d+\.\d+\.\d+)/);
-                            if (ipMatch && (line.includes('Raspberry Pi') || line.includes('ROBOT'))) {
-                                const ip = ipMatch[1];
-                                if (!robots.has(ip)) {
-                                    foundRobots.push({
-                                        ip: ip,
-                                        hostname: 'unknown',
-                                        type: line.includes('ROBOT') ? 'confirmed' : 'raspberry_pi'
-                                    });
-                                }
+                    
+                    if (result.status === 'success' && result.fleet && result.fleet.robots) {
+                        // Process the discovered robots from the fleet data
+                        result.fleet.robots.forEach(robot => {
+                            if (!robots.has(robot.ip)) {
+                                foundRobots.push({
+                                    ip: robot.ip,
+                                    hostname: robot.hostname || `lekiwi_${robot.ip.split('.').pop()}`,
+                                    type: robot.type === 'LEKIWI' ? 'confirmed' :
+                                          robot.type === 'XLEROBOT' ? 'confirmed' : 'raspberry_pi'
+                                });
                             }
                         });
+                        
+                        console.log(`Found ${foundRobots.length} robots from discovery`);
+                        
+                        // Show success message with robot count
+                        document.getElementById('scanning-status').innerHTML =
+                            `<span style="color: #4CAF50;">✅ Discovery complete! Found ${foundRobots.length} robots</span>`;
+                    } else if (result.status === 'warning') {
+                        console.log('Discovery completed but no robots found');
+                        document.getElementById('scanning-status').innerHTML =
+                            `<span style="color: #ffa726;">⚠️ ${result.message || 'No robots found'}</span>`;
                     }
                     
                     // Add discovered robots with proper type information
@@ -967,26 +1062,11 @@
                             deployments: [],
                             services: {},
                             type: robot.type === 'confirmed' ? 'LeKiwi Robot' : 'Raspberry Pi (Potential Robot)',
-                            robotType: robot.hostname?.includes('xlerobot') || robot.ip === '192.168.88.57' ? 'xlerobot' : 'lekiwi',
+                            robotType: robot.hostname?.toLowerCase().includes('xlerobot') ? 'xlerobot' : 'lekiwi',
                             isConfirmed: robot.type === 'confirmed',
-                            isXLE: robot.hostname?.includes('xlerobot') || robot.ip === '192.168.88.57'
+                            isXLE: robot.hostname?.toLowerCase().includes('xlerobot')
                         });
                     });
-                    
-                    // Run the add_discovered_robots.py to save the fleet
-                    const addResponse = await fetch(`${API_URL}/api/execute`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            command: 'bash',
-                            args: ['-c', 'cd deployment-server && source venv/bin/activate && python3 add_discovered_robots.py']
-                        })
-                    });
-                    
-                    if (addResponse.ok) {
-                        const addResult = await addResponse.json();
-                        console.log('Fleet saved:', addResult.output);
-                    }
                     
                     document.getElementById('scanning-status').textContent =
                         `Discovery complete: Found ${foundRobots.length} robots. Checking status...`;
@@ -998,15 +1078,27 @@
                     checkRobotsParallel();
                     
                 } else {
-                    document.getElementById('scanning-status').textContent = 'Discovery failed';
+                    document.getElementById('scanning-status').innerHTML =
+                        `<span style="color: #ff6b6b;">❌ Discovery failed - please check the server</span>`;
+                    document.getElementById('scan-icon').textContent = '❌';
                 }
                 
             } catch (error) {
                 console.error('Discovery error:', error);
-                document.getElementById('scanning-status').textContent = 'Discovery error: ' + error.message;
+                document.getElementById('scanning-status').innerHTML =
+                    `<span style="color: #ff6b6b;">❌ Discovery error: ${error.message}</span>`;
+                document.getElementById('scan-icon').textContent = '❌';
             } finally {
-                scanning = false;
-                document.getElementById('scan-icon').textContent = '🔍';
+                // Re-enable button after a delay to prevent accidental re-clicks
+                setTimeout(() => {
+                    scanning = false;
+                    const discoverBtn = document.getElementById('discover-btn');
+                    discoverBtn.disabled = false;
+                    discoverBtn.style.opacity = '1';
+                    discoverBtn.style.cursor = 'pointer';
+                    document.getElementById('scan-icon').textContent = '🔍';
+                    document.getElementById('scan-text').textContent = 'Discover Robots';
+                }, 2000);  // 2 second cooldown period
             }
         }
         
@@ -1397,10 +1489,15 @@
             
             // Detect XLERobot type - Advanced bimanual robot
             const isXLE = robot.robotType === 'xlerobot' ||
-                         robot.id?.includes('xlerobot') ||
-                         robot.ip === '192.168.88.57';
+                         robot.id?.toLowerCase().includes('xlerobot');
+            
+            // Add teleoperation badge
+            const teleopBadge = `<div class="teleop-badge hidden" id="teleop-${robot.ip.replace(/\./g, '-')}">
+                🎮 TELEOPERATED
+            </div>`;
             
             card.innerHTML = `
+                ${teleopBadge}
                 <div class="robot-header">
                     <div class="robot-name">
                         ${robot.id && robot.id !== 'checking...' ? robot.id : `Robot ${robot.ip.split('.').pop()}`}
@@ -1461,6 +1558,50 @@
                         </div>
                     ` : ''}
                 </div>
+                ${robot.status === 'online' || robot.status === 'partial' ? (
+                    isXLE ? `
+                        <div class="camera-preview" id="camera-preview-${robot.ip.replace(/\./g, '-')}" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                            <div class="camera-thumbnail" style="grid-column: span 2;">
+                                <div class="camera-label">RealSense</div>
+                                <img id="camera-realsense-${robot.ip.replace(/\./g, '-')}"
+                                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
+                                     alt="RealSense Camera"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
+                            </div>
+                            <div class="camera-thumbnail">
+                                <div class="camera-label">Claw 1</div>
+                                <img id="camera-claw1-${robot.ip.replace(/\./g, '-')}"
+                                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
+                                     alt="Claw Camera 1"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
+                            </div>
+                            <div class="camera-thumbnail">
+                                <div class="camera-label">Claw 2</div>
+                                <img id="camera-claw2-${robot.ip.replace(/\./g, '-')}"
+                                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
+                                     alt="Claw Camera 2"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
+                            </div>
+                        </div>
+                    ` : `
+                        <div class="camera-preview" id="camera-preview-${robot.ip.replace(/\./g, '-')}">
+                            <div class="camera-thumbnail">
+                                <div class="camera-label">Front</div>
+                                <img id="camera-front-${robot.ip.replace(/\./g, '-')}"
+                                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
+                                     alt="Front Camera"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
+                            </div>
+                            <div class="camera-thumbnail">
+                                <div class="camera-label">Wrist</div>
+                                <img id="camera-wrist-${robot.ip.replace(/\./g, '-')}"
+                                     src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
+                                     alt="Wrist Camera"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
+                            </div>
+                        </div>
+                    `
+                ) : ''}
                 <div class="robot-deployment">
                     <div class="deployment-badge">
                         Version 0.01 (Current)
@@ -1470,7 +1611,147 @@
             
             card.onclick = () => selectRobot(robot);
             
+            // Load camera thumbnails for this robot if online
+            if (robot.status === 'online' || robot.status === 'partial') {
+                loadCameraThumbnails(robot.ip, isXLE);
+                checkTeleopStatus(robot.ip);
+            }
+            
             return card;
+        }
+
+        // Load camera thumbnails for a robot
+        async function loadCameraThumbnails(robotIP, isXLE) {
+            try {
+                const response = await fetch(`${API_URL}/api/robot/${robotIP}/camera-thumbnail`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.thumbnails) {
+                        if (data.robot_type === 'xlerobot' || isXLE) {
+                            // XLE Robot: Update RealSense and claw cameras
+                            if (data.thumbnails.realsense) {
+                                const realsenseImg = document.getElementById(`camera-realsense-${robotIP.replace(/\./g, '-')}`);
+                                if (realsenseImg) {
+                                    realsenseImg.src = data.thumbnails.realsense;
+                                }
+                            }
+                            if (data.thumbnails.claw1) {
+                                const claw1Img = document.getElementById(`camera-claw1-${robotIP.replace(/\./g, '-')}`);
+                                if (claw1Img) {
+                                    claw1Img.src = data.thumbnails.claw1;
+                                }
+                            }
+                            if (data.thumbnails.claw2) {
+                                const claw2Img = document.getElementById(`camera-claw2-${robotIP.replace(/\./g, '-')}`);
+                                if (claw2Img) {
+                                    claw2Img.src = data.thumbnails.claw2;
+                                }
+                            }
+                        } else {
+                            // Lekiwi Robot: Update front and wrist cameras
+                            if (data.thumbnails.front) {
+                                const frontImg = document.getElementById(`camera-front-${robotIP.replace(/\./g, '-')}`);
+                                if (frontImg) {
+                                    frontImg.src = data.thumbnails.front;
+                                }
+                            }
+                            if (data.thumbnails.wrist) {
+                                const wristImg = document.getElementById(`camera-wrist-${robotIP.replace(/\./g, '-')}`);
+                                if (wristImg) {
+                                    wristImg.src = data.thumbnails.wrist;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.log(`Failed to load camera thumbnails for ${robotIP}:`, error);
+            }
+        }
+
+        // Check teleoperation status for a robot
+        async function checkTeleopStatus(robotIP) {
+            try {
+                const response = await fetch(`${API_URL}/api/robot/${robotIP}/teleoperation-status`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const badge = document.getElementById(`teleop-${robotIP.replace(/\./g, '-')}`);
+                    
+                    if (badge) {
+                        if (data.teleoperated) {
+                            badge.classList.remove('hidden');
+                            // Also highlight the robot card
+                            const card = badge.closest('.robot-card');
+                            if (card) {
+                                card.style.borderColor = '#ff6b6b';
+                                card.style.boxShadow = '0 0 10px rgba(255, 107, 107, 0.3)';
+                            }
+                        } else {
+                            badge.classList.add('hidden');
+                            // Remove highlight
+                            const card = badge.closest('.robot-card');
+                            if (card && !card.classList.contains('selected')) {
+                                card.style.borderColor = '';
+                                card.style.boxShadow = '';
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.log(`Failed to check teleoperation status for ${robotIP}:`, error);
+            }
+        }
+
+        // Start camera refresh interval
+        function startCameraRefresh() {
+            if (cameraRefreshInterval) {
+                clearInterval(cameraRefreshInterval);
+            }
+            
+            // Refresh cameras every 10 seconds
+            cameraRefreshInterval = setInterval(() => {
+                if (!document.hidden) {
+                    robots.forEach((robot, ip) => {
+                        if (robot.status === 'online' || robot.status === 'partial') {
+                            const isXLE = robot.robotType === 'xlerobot' || robot.id?.toLowerCase().includes('xlerobot');
+                            loadCameraThumbnails(ip, isXLE);
+                        }
+                    });
+                }
+            }, 10000);
+            
+            // Initial load
+            robots.forEach((robot, ip) => {
+                if (robot.status === 'online' || robot.status === 'partial') {
+                    const isXLE = robot.robotType === 'xlerobot' || robot.id?.toLowerCase().includes('xlerobot');
+                    loadCameraThumbnails(ip, isXLE);
+                }
+            });
+        }
+
+        // Start teleoperation status check interval
+        function startTeleopStatusCheck() {
+            if (teleopCheckInterval) {
+                clearInterval(teleopCheckInterval);
+            }
+            
+            // Check teleoperation status every 3 seconds
+            teleopCheckInterval = setInterval(() => {
+                if (!document.hidden) {
+                    robots.forEach((robot, ip) => {
+                        if (robot.status === 'online' || robot.status === 'partial') {
+                            checkTeleopStatus(ip);
+                        }
+                    });
+                }
+            }, 3000);
+            
+            // Initial check
+            robots.forEach((robot, ip) => {
+                if (robot.status === 'online' || robot.status === 'partial') {
+                    checkTeleopStatus(ip);
+                }
+            });
         }
 
         // Select robot to view details

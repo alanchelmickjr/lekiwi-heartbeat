@@ -136,12 +136,59 @@ if [ -d "/tmp/robot_comparisons" ]; then
     sudo rm -rf /tmp/robot_comparisons 2>/dev/null || rm -rf /tmp/robot_comparisons 2>/dev/null || true
 fi
 
-# Clean up discovery result files
-rm -f /tmp/discovery_results.json 2>/dev/null || true
-rm -f /tmp/smart_discovered.txt 2>/dev/null || true
-rm -f /tmp/discovered_robots.txt 2>/dev/null || true
-rm -f /tmp/lekiwi_fleet.json 2>/dev/null || true
-rm -f /tmp/robot_types.json 2>/dev/null || true
+# Don't delete discovery files - we need them to detect all robots!
+# Only clean up if explicitly requested via --clean-discovery flag
+if [[ "$*" == *"--clean-discovery"* ]]; then
+    if [ "$DEV_MODE" = true ]; then
+        echo -e "${YELLOW}Cleaning discovery files as requested...${NC}"
+    fi
+    rm -f /tmp/discovery_results.json 2>/dev/null || true
+    rm -f /tmp/smart_discovered.txt 2>/dev/null || true
+    rm -f /tmp/discovered_robots.txt 2>/dev/null || true
+    rm -f /tmp/lekiwi_fleet.json 2>/dev/null || true
+    rm -f /tmp/robot_types.json 2>/dev/null || true
+fi
+
+# Run discovery if fleet file doesn't exist
+if [ ! -f "/tmp/lekiwi_fleet.json" ]; then
+    if [ "$DEV_MODE" = true ]; then
+        echo -e "${BLUE}Fleet configuration not found. Running robot discovery...${NC}"
+    else
+        echo -e "${GREEN}Discovering robots...${NC}"
+    fi
+    
+    # Run smart discovery to find all robots
+    cd deployment-server
+    python3 smart_discover.py 2>/dev/null || {
+        if [ "$DEV_MODE" = true ]; then
+            echo -e "${YELLOW}⚠ Discovery failed, retrying with full output...${NC}"
+            python3 smart_discover.py
+        fi
+    }
+    
+    # Convert discovery results to fleet configuration
+    if [ -f "/tmp/smart_discovered.txt" ]; then
+        python3 add_discovered_robots.py 2>/dev/null || {
+            if [ "$DEV_MODE" = true ]; then
+                echo -e "${YELLOW}⚠ Fleet conversion failed${NC}"
+            fi
+        }
+    fi
+    
+    # Return to parent directory
+    cd ..
+    
+    if [ -f "/tmp/lekiwi_fleet.json" ]; then
+        if [ "$DEV_MODE" = true ]; then
+            ROBOT_COUNT=$(python3 -c "import json; print(json.load(open('/tmp/lekiwi_fleet.json'))['total'])" 2>/dev/null || echo "0")
+            echo -e "${GREEN}✓${NC} Discovered $ROBOT_COUNT robots"
+        fi
+    else
+        if [ "$DEV_MODE" = true ]; then
+            echo -e "${YELLOW}⚠${NC} No robots discovered, will use defaults"
+        fi
+    fi
+fi
 
 # Create fresh directories
 mkdir -p /tmp/robot_comparisons 2>/dev/null || true
