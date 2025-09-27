@@ -35,18 +35,101 @@ class LeKiwiDeployment:
         """Print colored log message"""
         print(f"{color}{message}{Colors.NC}")
         
-    def execute_ssh(self, command: str, suppress_error: bool = False) -> tuple:
+    def execute_ssh(self, command: str, suppress_error: bool = False, stream_output: bool = False) -> tuple:
         """Execute command on robot via SSH"""
         # Escape single quotes in command
         escaped_command = command.replace("'", "'\"'\"'")
         ssh_cmd = f"sshpass -p {self.password} ssh -o StrictHostKeyChecking=no {self.username}@{self.robot_ip} '{escaped_command}'"
-        result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True)
         
-        if result.returncode != 0 and not suppress_error:
-            self.log(f"Error executing: {command}", Colors.RED)
-            self.log(f"Error: {result.stderr}", Colors.RED)
+        if stream_output:
+            # Stream output in real-time for long-running commands
+            self.log(f"  Executing: {command}", Colors.CYAN)
+            process = subprocess.Popen(ssh_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+            stdout_lines = []
+            stderr_lines = []
+            
+            # Use unbuffered output for real-time streaming
+            import select
+            import time
+            
+            # Set non-blocking mode for better real-time output
+            start_time = time.time()
+            last_output_time = time.time()
+            timeout_seconds = 600  # 10 minute hard timeout
+            idle_timeout = 120  # 2 minute idle timeout
+            
+            self.log(f"    ⏳ Command started, monitoring output...", Colors.CYAN)
+            
+            while True:
+                # Check if process is still running
+                poll_status = process.poll()
+                if poll_status is not None:
+                    # Process finished
+                    break
+                    
+                # Check for timeout
+                current_time = time.time()
+                if current_time - start_time > timeout_seconds:
+                    self.log(f"    ⏰ Command timed out after {timeout_seconds} seconds!", Colors.RED)
+                    process.kill()
+                    break
+                    
+                if current_time - last_output_time > idle_timeout:
+                    self.log(f"    ⚠️ No output for {idle_timeout} seconds, command may be stuck", Colors.YELLOW)
+                    
+                # Try to read available output
+                ready, _, _ = select.select([process.stdout], [], [], 0.1)
+                if ready:
+                    line = process.stdout.readline()
+                    if line:
+                        last_output_time = current_time
+                        line = line.rstrip()
+                        stdout_lines.append(line)
+                        
+                        # Print progress indicators and important lines
+                        # Always show download progress (wget/curl output)
+                        if any(x in line for x in ['%', '....', 'KB/s', 'MB/s', 'ETA', '==>', 'downloaded']):
+                            self.log(f"    {line}", Colors.CYAN)
+                        # Show Miniconda installation progress
+                        elif any(x in line.lower() for x in ['prefix', 'extracting', 'unpacking',
+                                                              'installing', 'initializing', 'preparing',
+                                                              'transaction', 'linking', 'unlinking']):
+                            self.log(f"    📦 {line}", Colors.YELLOW)
+                        # Show errors or warnings
+                        elif any(x in line.lower() for x in ['error', 'warning', 'fail', 'unable']):
+                            self.log(f"    ⚠️ {line}", Colors.RED)
+                        # Show every 50th line to indicate progress
+                        elif len(stdout_lines) % 50 == 0:
+                            display_line = line[:80] + "..." if len(line) > 80 else line
+                            self.log(f"    ... {display_line}", Colors.CYAN)
+            
+            # Get any remaining output
+            remaining_out, remaining_err = process.communicate()
+            if remaining_out:
+                stdout_lines.extend(remaining_out.strip().split('\n'))
+            if remaining_err:
+                stderr_lines = remaining_err.strip().split('\n')
+            
+            returncode = process.returncode
+            stdout = '\n'.join(stdout_lines)
+            stderr = '\n'.join(stderr_lines)
+            
+            if returncode != 0 and not suppress_error:
+                self.log(f"Error executing: {command}", Colors.RED)
+                if stderr:
+                    self.log(f"Error: {stderr}", Colors.RED)
+                    
+            return returncode, stdout, stderr
+        else:
+            # Original non-streaming version
+            result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True)
+            
+            if result.returncode != 0 and not suppress_error:
+                self.log(f"Error executing: {command}", Colors.RED)
+                self.log(f"Error: {result.stderr}", Colors.RED)
+                
+            return result.returncode, result.stdout.strip(), result.stderr.strip()
         
     def copy_to_robot(self, local_path: str, remote_path: str) -> bool:
         """Copy file to robot via SCP"""
@@ -155,10 +238,10 @@ class LeKiwiDeployment:
         # Setup conda environment if needed
         ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3 ]", suppress_error=True)
         if ret != 0:
-            self.log("  Installing Miniconda...", Colors.YELLOW)
-            self.execute_ssh("wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O /tmp/miniconda.sh")
-            self.execute_ssh("bash /tmp/miniconda.sh -b -p /home/lekiwi/miniconda3")
-            self.execute_ssh("echo 'export PATH=/home/lekiwi/miniconda3/bin:$PATH' >> ~/.bashrc")
+            self.log("  Miniconda not found, installing...", Colors.YELLOW)
+            if not self.install_miniconda_only():
+                self.log("  ✗ Failed to install Miniconda", Colors.RED)
+                return False
             
         # Create conda environment and install LeRobot (use lerobot as env name)
         self.log("  Creating conda environment...", Colors.YELLOW)
@@ -176,27 +259,131 @@ class LeKiwiDeployment:
         ret, _, _ = self.execute_ssh("[ -d /home/lekiwi/miniconda3 ]", suppress_error=True)
         if ret == 0:
             self.log("  ℹ Miniconda already installed", Colors.YELLOW)
-            return True
+            # Verify it's working
+            ret, version_out, _ = self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate && conda --version", suppress_error=True)
+            if ret == 0:
+                self.log(f"  ✓ Conda version: {version_out}", Colors.GREEN)
+                return True
+            else:
+                self.log("  ⚠️ Miniconda directory exists but conda not working, reinstalling...", Colors.YELLOW)
+                # Remove broken installation
+                self.execute_ssh("rm -rf /home/lekiwi/miniconda3")
+        
+        # Check system architecture to ensure we're on ARM64
+        ret, arch, _ = self.execute_ssh("uname -m")
+        if ret == 0:
+            self.log(f"  System architecture: {arch}", Colors.CYAN)
+            if "aarch64" not in arch and "arm64" not in arch:
+                self.log(f"  ⚠️ Warning: System is {arch}, not ARM64/aarch64", Colors.YELLOW)
         
         # Install dependencies
-        self.log("  Installing dependencies...", Colors.YELLOW)
-        self.execute_ssh("sudo apt-get update && sudo apt-get install -y wget")
+        self.log("  Installing system dependencies...", Colors.YELLOW)
+        ret, _, err = self.execute_ssh("sudo apt-get update && sudo apt-get install -y wget curl ca-certificates")
+        if ret != 0:
+            self.log(f"  ✗ Failed to install dependencies: {err}", Colors.RED)
+            return False
         
-        # Download and install Miniconda
-        self.log("  Downloading Miniconda...", Colors.YELLOW)
-        self.execute_ssh("wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O /tmp/miniconda.sh")
+        # Clean up any old installer
+        self.execute_ssh("rm -f /tmp/miniconda.sh", suppress_error=True)
         
-        self.log("  Installing Miniconda...", Colors.YELLOW)
-        ret, _, _ = self.execute_ssh("bash /tmp/miniconda.sh -b -p /home/lekiwi/miniconda3")
+        # Download Miniconda for ARM64/aarch64 (Raspberry Pi)
+        miniconda_url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh"
+        self.log(f"  📥 Downloading Miniconda from: {miniconda_url}", Colors.YELLOW)
+        self.log("  This may take 2-3 minutes depending on network speed...", Colors.YELLOW)
+        
+        # First test connectivity
+        self.log("  Testing download connectivity...", Colors.CYAN)
+        test_cmd = f"curl -I -L --connect-timeout 10 {miniconda_url} | head -n 1"
+        ret, test_out, test_err = self.execute_ssh(test_cmd, suppress_error=True)
+        if ret != 0:
+            self.log("  ⚠️ Cannot reach Miniconda server, checking network...", Colors.YELLOW)
+            # Test basic network
+            ping_ret, _, _ = self.execute_ssh("ping -c 1 8.8.8.8", suppress_error=True)
+            if ping_ret != 0:
+                self.log("  ✗ No internet connection on robot!", Colors.RED)
+                return False
+        
+        # Use wget with progress indicator - more reliable than curl on Raspberry Pi
+        download_cmd = f"wget --no-check-certificate --progress=dot:mega {miniconda_url} -O /tmp/miniconda.sh 2>&1"
+        self.log("  Starting download with wget...", Colors.CYAN)
+        ret, out, err = self.execute_ssh(download_cmd, stream_output=True)
         
         if ret != 0:
-            self.log("  ✗ Failed to install Miniconda", Colors.RED)
+            self.log(f"  ✗ Failed to download Miniconda", Colors.RED)
+            if err:
+                self.log(f"  Error: {err[:500]}", Colors.RED)
+            # Try alternative download method with curl
+            self.log("  Trying alternative download method with curl...", Colors.YELLOW)
+            alt_cmd = f"curl -L -o /tmp/miniconda.sh {miniconda_url} 2>&1"
+            ret, out, err = self.execute_ssh(alt_cmd, stream_output=True)
+            if ret != 0:
+                self.log(f"  ✗ Alternative download also failed", Colors.RED)
+                if err:
+                    self.log(f"  Error: {err[:500]}", Colors.RED)
+                return False
+        
+        # Verify download
+        ret, size_out, _ = self.execute_ssh("ls -lh /tmp/miniconda.sh | awk '{print $5}'")
+        if ret == 0:
+            self.log(f"  Downloaded file size: {size_out}", Colors.CYAN)
+        
+        # Check if file exists and is not empty
+        ret, _, _ = self.execute_ssh("[ -s /tmp/miniconda.sh ]")
+        if ret != 0:
+            self.log("  ✗ Downloaded file is empty or missing", Colors.RED)
             return False
-            
-        # Add to PATH
+        
+        # Make installer executable
+        self.execute_ssh("chmod +x /tmp/miniconda.sh")
+        
+        # Install Miniconda with verbose output
+        self.log("  🚀 Starting Miniconda installation...", Colors.YELLOW)
+        self.log("  This will take 2-3 minutes. Installation progress:", Colors.CYAN)
+        
+        # First make sure the script is executable and valid
+        self.log("  Checking installer integrity...", Colors.CYAN)
+        check_ret, check_out, _ = self.execute_ssh("file /tmp/miniconda.sh && head -n 1 /tmp/miniconda.sh")
+        if check_ret == 0:
+            self.log(f"  Installer check: {check_out[:100]}", Colors.CYAN)
+        
+        # Run the installer with explicit bash and unbuffered output
+        # Add -x flag for verbose output to see what's happening
+        install_cmd = "bash -x /tmp/miniconda.sh -b -p /home/lekiwi/miniconda3 2>&1"
+        self.log("  Executing installer (this WILL take time, please be patient)...", Colors.YELLOW)
+        ret, install_out, install_err = self.execute_ssh(install_cmd, stream_output=True)
+        
+        if ret != 0:
+            self.log(f"  ✗ Failed to install Miniconda", Colors.RED)
+            self.log(f"  Error output: {install_err}", Colors.RED)
+            if install_out:
+                self.log(f"  Install output: {install_out[-500:]}", Colors.YELLOW)  # Last 500 chars
+            # Clean up failed installation
+            self.execute_ssh("rm -rf /home/lekiwi/miniconda3", suppress_error=True)
+            return False
+        
+        # Add conda to PATH in .bashrc
+        self.log("  Configuring PATH...", Colors.YELLOW)
         self.execute_ssh("echo 'export PATH=/home/lekiwi/miniconda3/bin:$PATH' >> ~/.bashrc")
         
-        self.log("  ✓ Miniconda installed successfully", Colors.GREEN)
+        # Initialize conda for bash
+        self.log("  Initializing conda for bash shell...", Colors.YELLOW)
+        ret, init_out, init_err = self.execute_ssh("/home/lekiwi/miniconda3/bin/conda init bash", stream_output=True)
+        if ret == 0 and init_out:
+            self.log(f"  Conda init output: {init_out[:200]}", Colors.CYAN)
+        
+        # Verify installation
+        ret, version_out, _ = self.execute_ssh("source /home/lekiwi/miniconda3/bin/activate && conda --version")
+        if ret == 0:
+            self.log(f"  ✓ Miniconda installed successfully: {version_out}", Colors.GREEN)
+        else:
+            self.log("  ⚠️ Miniconda installed but verification failed", Colors.YELLOW)
+        
+        # Clean up installer
+        self.execute_ssh("rm -f /tmp/miniconda.sh", suppress_error=True)
+        
+        # Configure conda to not auto-activate base environment (optional)
+        self.execute_ssh("/home/lekiwi/miniconda3/bin/conda config --set auto_activate_base false", suppress_error=True)
+        
         return True
     
     def setup_python_environment(self) -> bool:

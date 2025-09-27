@@ -62,8 +62,9 @@ class RobotFileComparison:
         all_files = self.COMPARISON_FILES + self.ROBOT_SPECIFIC_FILES
         for filepath in all_files:
             local_path = robot_cache / Path(filepath).name
-            cmd = f"sshpass -p {password} scp -o StrictHostKeyChecking=no {username}@{robot_ip}:{filepath} {local_path} 2>/dev/null"
-            result = subprocess.run(cmd, shell=True, capture_output=True)
+            # Increased timeout for slow Raspberry Pis
+            cmd = f"sshpass -p {password} scp -o StrictHostKeyChecking=no -o ConnectTimeout=15 {username}@{robot_ip}:{filepath} {local_path} 2>/dev/null"
+            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=30)
             
             if result.returncode == 0:
                 try:
@@ -75,9 +76,9 @@ class RobotFileComparison:
                 except:
                     robot_data["errors"].append(f"Could not read {filepath}")
             else:
-                # Check if file exists
-                check_cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no {username}@{robot_ip} '[ -f {filepath} ] && echo exists'"
-                check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+                # Check if file exists with adequate timeout
+                check_cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 {username}@{robot_ip} '[ -f {filepath} ] && echo exists'"
+                check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=20)
                 if "exists" not in check_result.stdout:
                     robot_data["files"][filepath] = None  # File doesn't exist
                 else:
@@ -85,15 +86,16 @@ class RobotFileComparison:
         
         # Fetch binary file checksums
         for filepath in self.BINARY_FILES:
-            cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no {username}@{robot_ip} 'sha256sum {filepath} 2>/dev/null | cut -d\" \" -f1'"
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            # Adequate timeout for checksum calculation on slow Pis
+            cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 {username}@{robot_ip} 'sha256sum {filepath} 2>/dev/null | cut -d\" \" -f1'"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=25)
             
             if result.returncode == 0 and result.stdout.strip():
                 robot_data["checksums"][filepath] = result.stdout.strip()
             else:
-                # Check if file exists
-                check_cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no {username}@{robot_ip} '[ -f {filepath} ] && echo exists'"
-                check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+                # Check if file exists with adequate timeout
+                check_cmd = f"sshpass -p {password} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 {username}@{robot_ip} '[ -f {filepath} ] && echo exists'"
+                check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=20)
                 if "exists" not in check_result.stdout:
                     robot_data["checksums"][filepath] = None  # File doesn't exist
                     

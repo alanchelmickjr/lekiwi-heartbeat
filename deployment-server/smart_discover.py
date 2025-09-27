@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import paramiko
 import warnings
 warnings.filterwarnings("ignore")
+import os
 
 # ANSI colors
 GREEN = '\033[92m'
@@ -25,11 +26,21 @@ import json
 import logging
 logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
-def get_ssh_banner(ip, port=22, timeout=3):
-    """Get SSH banner from server - reliable timeout"""
+# Configurable timeouts (can be overridden via environment variables)
+TIMEOUT_CONFIG = {
+    'ssh_banner': int(os.getenv('DISCOVERY_SSH_BANNER_TIMEOUT', '10')),  # Increased from 3 to 10 seconds
+    'ssh_login': int(os.getenv('DISCOVERY_SSH_LOGIN_TIMEOUT', '15')),    # Increased from 5 to 15 seconds
+    'port_check': int(os.getenv('DISCOVERY_PORT_CHECK_TIMEOUT', '5')),   # Increased from 2 to 5 seconds
+    'max_workers': int(os.getenv('DISCOVERY_MAX_WORKERS', '25')),        # Increased from 15 to 25 for better parallelism
+}
+
+def get_ssh_banner(ip, port=22, timeout=None):
+    """Get SSH banner from server - with adequate timeout for slow Pis"""
+    if timeout is None:
+        timeout = TIMEOUT_CONFIG['ssh_banner']
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)  # Balanced for reliability
+        sock.settimeout(timeout)  # Adequate timeout for Raspberry Pi
         sock.connect((ip, port))
         
         # Read banner (usually first 255 bytes)
@@ -39,9 +50,11 @@ def get_ssh_banner(ip, port=22, timeout=3):
     except:
         return None
 
-def try_ssh_login(ip, username='lekiwi', password='lekiwi', timeout=5):
-    """Try to SSH login with known credentials - reliable timeout"""
-    logging.debug(f"[SSH] Attempting login to {ip} as {username}...")
+def try_ssh_login(ip, username='lekiwi', password='lekiwi', timeout=None):
+    """Try to SSH login with known credentials - with adequate timeout for slow Pis"""
+    if timeout is None:
+        timeout = TIMEOUT_CONFIG['ssh_login']
+    logging.debug(f"[SSH] Attempting login to {ip} as {username} (timeout: {timeout}s)...")
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -89,13 +102,13 @@ def scan_host(ip):
         'robot_type': None
     }
     
-    # First check if SSH port is open - balanced timeout
+    # First check if SSH port is open - adequate timeout for slow Pis
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)  # Balanced between speed and reliability
+        sock.settimeout(TIMEOUT_CONFIG['port_check'])  # Give Pis enough time to respond
         if sock.connect_ex((ip, 22)) == 0:
             result['ssh_open'] = True
-            logging.debug(f"[SSH] Port 22 open on {ip}")
+            logging.debug(f"[SSH] Port 22 open on {ip} (responded within {TIMEOUT_CONFIG['port_check']}s)")
         sock.close()
     except:
         pass
@@ -135,15 +148,9 @@ def scan_host(ip):
             result['is_robot'] = True
             logging.debug(f"[ROBOT] Confirmed robot at {ip}: {result['hostname']}")
             
-            # Enhanced XLE robot detection:
-            # Check for XLEROBOT-specific libraries (only reliable method)
-            if login_result.get('has_xlerobot_libs', False):
-                result['robot_type'] = 'xlerobot'
-                logging.debug(f"[XLEROBOT] Detected XLE robot at {ip} (has XLEROBOT-specific libraries)")
-            else:
-                # No XLEROBOT-specific libraries = regular LEKIWI
-                # Hostname is not reliable (can be renamed incorrectly)
-                result['robot_type'] = 'lekiwi'
+            # Don't do robot type detection here - let detect_robot_type.py handle it
+            # This avoids duplicate/conflicting detection logic
+            result['robot_type'] = 'unknown'  # Will be determined later by detect_robot_type.py
     else:
         # Even if login fails, we may have detected it's a Pi from the banner
         logging.debug(f"[SSH] Login failed for {ip}: {login_result.get('reason', 'unknown')}")
@@ -157,14 +164,15 @@ def scan_host(ip):
     return result
 
 def discover_smart(network="192.168.88", start=1, end=254):
-    """Smart discovery of LeKiwi robots with improved detection"""
+    """Smart discovery of LeKiwi robots with improved detection and timeouts"""
     print(f"{CYAN}═══════════════════════════════════════════════════════════════{RESET}")
-    print(f"{CYAN}       🤖 LeKiwi Smart Robot Discovery v2.1 🤖{RESET}")
+    print(f"{CYAN}       🤖 LeKiwi Smart Robot Discovery v2.2 🤖{RESET}")
     print(f"{CYAN}═══════════════════════════════════════════════════════════════{RESET}\n")
     
     print(f"📡 Network: {network}.{start}-{end} ({end-start+1} IPs)")
-    print(f"🔍 Methods: Fast parallel scan + SSH detection + Pi identification")
-    print(f"⚡ Speed: Optimized for fast discovery\n")
+    print(f"🔍 Methods: Parallel scan + SSH detection + Pi identification")
+    print(f"⚡ Speed: Optimized with {TIMEOUT_CONFIG['max_workers']} parallel workers")
+    print(f"⏱️  Timeouts: Port check: {TIMEOUT_CONFIG['port_check']}s, SSH banner: {TIMEOUT_CONFIG['ssh_banner']}s, SSH login: {TIMEOUT_CONFIG['ssh_login']}s\n")
     
     robots = []
     ssh_hosts = []
@@ -173,11 +181,11 @@ def discover_smart(network="192.168.88", start=1, end=254):
     ips = [f"{network}.{i}" for i in range(start, end + 1)]
     total = len(ips)
     
-    print(f"{YELLOW}Scanning {total} IPs with improved detection...{RESET}\n")
+    print(f"{YELLOW}Scanning {total} IPs with adequate timeouts for Raspberry Pis...{RESET}\n")
     
-    # Balanced workers for reliable parallel scanning
+    # Optimized parallel scanning with more workers for faster discovery
     start_time = time.time()
-    with ThreadPoolExecutor(max_workers=15) as executor:  # Balanced for speed and reliability
+    with ThreadPoolExecutor(max_workers=TIMEOUT_CONFIG['max_workers']) as executor:  # More workers for better parallelism
         futures = {executor.submit(scan_host, ip): ip for ip in ips}
         
         completed = 0

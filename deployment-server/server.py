@@ -338,11 +338,12 @@ async def get_fleet():
         
         try:
             # Run smart discovery to find all robots
+            # Increased timeout to allow for proper Raspberry Pi scanning
             discovery_result = subprocess.run(
                 ["python3", "smart_discover.py"],
                 capture_output=True,
                 text=True,
-                timeout=60,  # 60 second timeout for discovery
+                timeout=120,  # Increased from 60 to 120 seconds for thorough discovery
                 cwd=Path(__file__).parent  # Run in deployment-server directory
             )
             
@@ -692,23 +693,104 @@ async def execute_command(request: Request):
                 # Go up one directory from deployment-server to find deployment-master
                 args[0] = os.path.join(os.path.dirname(os.path.dirname(__file__)), script_path)
         
+        # Determine appropriate timeout based on the action
+        timeout = 5  # Default timeout for simple commands
+        use_streaming = False  # Flag to determine if we should stream output
+        
+        # Check if this is a Miniconda installation or other long-running operation
+        if args and len(args) > 2:
+            if '--action' in args and 'install-conda' in args:
+                timeout = 300  # 5 minutes for Miniconda installation (increased for safety)
+                use_streaming = True
+                print(f"🐍 Miniconda installation detected, using {timeout}s timeout with output streaming")
+            elif '--action' in args and 'setup-env' in args:
+                timeout = 300  # 5 minutes for full environment setup
+                use_streaming = True
+                print(f"🔧 Environment setup detected, using {timeout}s timeout")
+            elif '--action' in args and 'full' in args:
+                timeout = 240  # 4 minutes for full deployment
+                print(f"🚀 Full deployment detected, using {timeout}s timeout")
+        
         # Execute command
         full_command = [command] + args
-        print(f"Executing: {' '.join(full_command)}")  # Debug logging
+        print(f"📦 Executing: {' '.join(full_command)} (timeout: {timeout}s)")  # Debug logging
         
-        result = subprocess.run(full_command, capture_output=True, text=True, timeout=5, cwd=os.path.dirname(os.path.dirname(__file__)))
+        # For long-running commands with streaming, use Popen to capture output progressively
+        if use_streaming:
+            print(f"🔄 Using streaming output for command...")
+            
+            # Use Popen for better control over the process
+            process = subprocess.Popen(
+                full_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=os.path.dirname(os.path.dirname(__file__))
+            )
+            
+            # Collect output with timeout
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+                return_code = process.returncode
+                
+                # Log important parts of the output for debugging
+                if "Installing Miniconda" in stdout:
+                    print("✅ Miniconda installation output detected")
+                    # Extract and log key installation steps
+                    for line in stdout.split('\n'):
+                        if any(keyword in line for keyword in ['PREFIX', 'extracting', 'installing',
+                                                                'unpacking', 'Preparing', 'Extracting',
+                                                                'Conda version', '✓', '✗', '⚠️']):
+                            print(f"  📍 {line.strip()}")
+                
+                return {
+                    "success": return_code == 0,
+                    "output": stdout,
+                    "error": stderr,
+                    "return_code": return_code
+                }
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()  # Get any remaining output
+                error_msg = f"Command timed out after {timeout} seconds. Partial output captured."
+                print(f"⏰ {error_msg}")
+                return {
+                    "success": False,
+                    "output": stdout if stdout else "No output captured before timeout",
+                    "error": f"{error_msg}\n{stderr}" if stderr else error_msg,
+                    "return_code": -1
+                }
+        else:
+            # Original non-streaming version for quick commands
+            result = subprocess.run(
+                full_command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=os.path.dirname(os.path.dirname(__file__))
+            )
+            
+            return {
+                "success": result.returncode == 0,
+                "output": result.stdout,
+                "error": result.stderr,
+                "return_code": result.returncode
+            }
         
+    except subprocess.TimeoutExpired as e:
+        error_msg = f"Command timed out after {timeout} seconds"
+        print(f"⏰ {error_msg}: {' '.join(full_command)}")
+        # Try to get partial output if available
+        partial_output = e.stdout.decode() if e.stdout else "No output captured"
+        partial_error = e.stderr.decode() if e.stderr else ""
         return {
-            "success": result.returncode == 0,
-            "output": result.stdout,
-            "error": result.stderr,
-            "return_code": result.returncode
+            "success": False,
+            "output": partial_output,
+            "error": f"{error_msg}\n{partial_error}",
+            "return_code": -1
         }
-        
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=408, detail="Command timed out")
     except Exception as e:
-        print(f"Error in execute_command: {e}")  # Debug logging
+        print(f"❌ Error in execute_command: {e}")  # Debug logging
         raise HTTPException(status_code=500, detail=str(e))
 
 # Comparison API Endpoints
@@ -913,11 +995,11 @@ async def create_ssh_session(request: Request):
         if not robot_ip:
             raise HTTPException(status_code=400, detail="robot_ip is required")
         
-        # Test SSH connectivity
+        # Test SSH connectivity with adequate timeout for slow Pis
         test_cmd = ["sshpass", "-p", "lekiwi", "ssh", "-o", "StrictHostKeyChecking=no",
-                   "-o", "ConnectTimeout=5", f"lekiwi@{robot_ip}", "echo 'SSH connection test'"]
+                   "-o", "ConnectTimeout=15", f"lekiwi@{robot_ip}", "echo 'SSH connection test'"]
         
-        result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=20)
         
         if result.returncode != 0:
             raise HTTPException(status_code=503, detail=f"Cannot connect to robot at {robot_ip}: {result.stderr}")
@@ -933,7 +1015,7 @@ async def create_ssh_session(request: Request):
         }
         
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=408, detail=f"SSH connection to {robot_ip} timed out")
+        raise HTTPException(status_code=408, detail=f"SSH connection to {robot_ip} timed out (15s limit)")
     except Exception as e:
         print(f"SSH connection error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -954,11 +1036,11 @@ async def execute_ssh_command(request: Request):
         if any(dangerous in command.lower() for dangerous in dangerous_commands):
             raise HTTPException(status_code=403, detail="Potentially dangerous command blocked")
         
-        # Execute command via SSH
+        # Execute command via SSH with adequate timeout
         ssh_cmd = ["sshpass", "-p", "lekiwi", "ssh", "-o", "StrictHostKeyChecking=no",
-                  "-o", "ConnectTimeout=10", f"lekiwi@{robot_ip}", command]
+                  "-o", "ConnectTimeout=15", f"lekiwi@{robot_ip}", command]
         
-        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=45)
         
         return {
             "success": result.returncode == 0,
@@ -1121,12 +1203,12 @@ async def trigger_discovery():
             if file_path.exists():
                 file_path.unlink()
         
-        # Run smart discovery
+        # Run smart discovery with adequate timeout for thorough scanning
         discovery_result = subprocess.run(
             ["python3", "smart_discover.py"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,  # Increased timeout for complete discovery
             cwd=Path(__file__).parent
         )
         
@@ -1175,162 +1257,82 @@ async def trigger_discovery():
         print(f"❌ Discovery error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Camera Thumbnail API Endpoints
+# Camera Streaming Endpoints
+@app.get("/api/robot/{robot_ip}/stream.mjpg")
+async def get_camera_stream(robot_ip: str, camera: str = Query(default="0")):
+    """Get MJPEG stream from robot camera"""
+    from fastapi.responses import StreamingResponse
+    
+    # Simple MJPEG streaming command
+    cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i /dev/video{camera} -f mjpeg -q:v 5 -r 10 -' 2>/dev/null"
+    
+    def generate():
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                data = process.stdout.read(65536)  # Read in chunks
+                if not data:
+                    break
+                yield data
+        finally:
+            process.terminate()
+    
+    return StreamingResponse(generate(), media_type="multipart/x-mixed-replace;boundary=frame")
+
+# Simplified camera thumbnail endpoint
 @app.get("/api/robot/{robot_ip}/camera-thumbnail")
 async def get_camera_thumbnail(robot_ip: str):
-    """Get camera thumbnails from a robot (configuration based on robot type)"""
+    """Get camera thumbnails from a robot - SIMPLIFIED"""
     try:
         thumbnails = {}
         
-        # First detect robot type to determine camera configuration
+        # Detect robot type
         from detect_robot_type import detect_robot_type
         robot_type = detect_robot_type(robot_ip)
-        print(f"📷 Robot {robot_ip} detected as type: {robot_type}")
+        print(f"📷 Getting thumbnails for {robot_ip} (type: {robot_type})")
         
-        # Method 1: Try ZMQ connection first if available
-        if ZMQ_AVAILABLE:
-            try:
-                context = zmq.Context()
-                socket = context.socket(zmq.PULL)
-                socket.setsockopt(zmq.CONFLATE, 1)  # Only keep latest message
-                socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5 second timeout
-                
-                # Connect to robot's ZMQ stream
-                socket.connect(f"tcp://{robot_ip}:5556")
-                
-                # Try to get frames from ZMQ
-                try:
-                    # Get a frame
-                    message = socket.recv_string()
-                    frame_data = json.loads(message)
-                    
-                    # Extract images based on robot type
-                    if robot_type == 'xlerobot':
-                        # XLE robot has RealSense + 2 claw cameras
-                        if 'realsense_camera' in frame_data:
-                            thumbnails['realsense'] = frame_data['realsense_camera']
-                        if 'claw1_camera' in frame_data:
-                            thumbnails['claw1'] = frame_data['claw1_camera']
-                        if 'claw2_camera' in frame_data:
-                            thumbnails['claw2'] = frame_data['claw2_camera']
-                    else:
-                        # Lekiwi robot has front + wrist cameras
-                        if 'front_camera' in frame_data:
-                            thumbnails['front'] = frame_data['front_camera']
-                        if 'wrist_camera' in frame_data:
-                            thumbnails['wrist'] = frame_data['wrist_camera']
-                    
-                    # If we got at least one image, return success
-                    if thumbnails:
-                        socket.close()
-                        context.term()
-                        return JSONResponse(content={
-                            "success": True,
-                            "method": "zmq",
-                            "robot_type": robot_type,
-                            "thumbnails": thumbnails,
-                            "timestamp": time.time()
-                        })
-                except zmq.error.Again:
-                    pass  # Timeout - try fallback
-                finally:
-                    socket.close()
-                    context.term()
-            except Exception as zmq_error:
-                print(f"ZMQ error for {robot_ip}: {zmq_error}")
-        
-        # Method 2: Fallback to SSH + ffmpeg capture
-        print(f"📷 Using SSH+ffmpeg fallback for {robot_ip} (type: {robot_type})")
+        # Simple approach: just grab a frame from each camera
         
         if robot_type == 'xlerobot':
-            # XLE Robot: 3 cameras (RealSense + 2 claw cameras)
-            # First, list available video devices to identify cameras
-            list_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ls -la /dev/video* 2>/dev/null | grep ^c'"
-            list_result = subprocess.run(["bash", "-c", list_cmd], capture_output=True, text=True, timeout=5)
-            
-            # RealSense is typically on /dev/video0 or /dev/video2 (depth), /dev/video4 (rgb)
-            # Try to capture RealSense RGB camera (usually /dev/video4 or /dev/video0)
-            for video_dev in ['/dev/video4', '/dev/video0', '/dev/video2']:
-                realsense_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
-                try:
-                    result = subprocess.run(["bash", "-c", realsense_cmd], capture_output=True, timeout=10)
-                    if result.returncode == 0 and result.stdout:
-                        realsense_base64 = result.stdout.decode().replace('\n', '').strip()
-                        if realsense_base64:
-                            thumbnails['realsense'] = f"data:image/jpeg;base64,{realsense_base64}"
-                            break
-                except Exception as e:
-                    print(f"Failed to capture RealSense from {video_dev}: {e}")
-            
-            # Claw camera 1 (try /dev/video6 or /dev/video1)
-            for video_dev in ['/dev/video6', '/dev/video1']:
-                claw1_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
-                try:
-                    result = subprocess.run(["bash", "-c", claw1_cmd], capture_output=True, timeout=10)
-                    if result.returncode == 0 and result.stdout:
-                        claw1_base64 = result.stdout.decode().replace('\n', '').strip()
-                        if claw1_base64:
-                            thumbnails['claw1'] = f"data:image/jpeg;base64,{claw1_base64}"
-                            break
-                except Exception as e:
-                    print(f"Failed to capture claw1 from {video_dev}: {e}")
-            
-            # Claw camera 2 (try /dev/video8 or /dev/video3)
-            for video_dev in ['/dev/video8', '/dev/video3']:
-                claw2_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
-                try:
-                    result = subprocess.run(["bash", "-c", claw2_cmd], capture_output=True, timeout=10)
-                    if result.returncode == 0 and result.stdout:
-                        claw2_base64 = result.stdout.decode().replace('\n', '').strip()
-                        if claw2_base64:
-                            thumbnails['claw2'] = f"data:image/jpeg;base64,{claw2_base64}"
-                            break
-                except Exception as e:
-                    print(f"Failed to capture claw2 from {video_dev}: {e}")
-        
+            # XLE Robot: Try to grab frames from 3 cameras
+            cameras = [
+                ('RealSense', '/dev/video0'),
+                ('Claw 1', '/dev/video2'),
+                ('Claw 2', '/dev/video4')
+            ]
         else:
-            # Lekiwi Robot: 2 cameras (front + wrist)
-            # Capture front camera (/dev/video0)
-            front_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i /dev/video0 -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
+            # LeKiwi Robot: 2 cameras
+            cameras = [
+                ('Front', '/dev/video0'),
+                ('Wrist', '/dev/video2')
+            ]
+        
+        # Try to capture a frame from each camera
+        for cam_name, video_dev in cameras:
+            cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i {video_dev} -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=320:240 - 2>/dev/null' | base64"
             
             try:
-                result = subprocess.run(["bash", "-c", front_cmd], capture_output=True, timeout=10)
+                result = subprocess.run(["bash", "-c", cmd], capture_output=True, timeout=10)
                 if result.returncode == 0 and result.stdout:
-                    front_base64 = result.stdout.decode().replace('\n', '').strip()
-                    if front_base64:
-                        thumbnails['front'] = f"data:image/jpeg;base64,{front_base64}"
+                    base64_data = result.stdout.decode().replace('\n', '').strip()
+                    if base64_data:
+                        thumbnails[cam_name.lower().replace(' ', '_')] = f"data:image/jpeg;base64,{base64_data}"
+                        print(f"  ✓ Captured {cam_name} from {video_dev}")
+                    else:
+                        print(f"  ✗ No data from {cam_name} at {video_dev}")
+                else:
+                    print(f"  ✗ Failed to capture {cam_name} from {video_dev}")
             except Exception as e:
-                print(f"Failed to capture front camera from {robot_ip}: {e}")
-            
-            # Capture wrist camera (/dev/video2)
-            wrist_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ffmpeg -f v4l2 -i /dev/video2 -frames:v 1 -f image2pipe -vcodec mjpeg -vf scale=160:120 - 2>/dev/null' | base64"
-            
-            try:
-                result = subprocess.run(["bash", "-c", wrist_cmd], capture_output=True, timeout=10)
-                if result.returncode == 0 and result.stdout:
-                    wrist_base64 = result.stdout.decode().replace('\n', '').strip()
-                    if wrist_base64:
-                        thumbnails['wrist'] = f"data:image/jpeg;base64,{wrist_base64}"
-            except Exception as e:
-                print(f"Failed to capture wrist camera from {robot_ip}: {e}")
+                print(f"  ✗ Error capturing {cam_name}: {e}")
         
-        # Return results
-        if thumbnails:
-            return JSONResponse(content={
-                "success": True,
-                "method": "ssh_ffmpeg",
-                "robot_type": robot_type,
-                "thumbnails": thumbnails,
-                "timestamp": time.time()
-            })
-        else:
-            return JSONResponse(content={
-                "success": False,
-                "error": "No cameras available",
-                "robot_type": robot_type,
-                "thumbnails": {},
-                "timestamp": time.time()
-            })
+        # Return simplified results
+        return JSONResponse(content={
+            "success": len(thumbnails) > 0,
+            "robot_type": robot_type,
+            "thumbnails": thumbnails,
+            "camera_count": len(thumbnails),
+            "timestamp": time.time()
+        })
             
     except Exception as e:
         print(f"Camera thumbnail error for {robot_ip}: {e}")
@@ -1371,37 +1373,37 @@ async def get_teleoperation_status(robot_ip: str):
     """Check if robot is being teleoperated"""
     try:
         # Method 1: Check for teleoperate.py process
-        process_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'pgrep -f teleoperate.py || echo none'"
+        process_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'pgrep -f teleoperate.py || echo none'"
         
         process_result = subprocess.run(
             ["bash", "-c", process_check_cmd],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=15
         )
         
         has_process = process_result.returncode == 0 and process_result.stdout.strip() != "none"
         
         # Method 2: Check if port 5558 is in use (teleoperation port)
-        port_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'netstat -tuln | grep :5558 || echo none'"
+        port_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'netstat -tuln | grep :5558 || echo none'"
         
         port_result = subprocess.run(
             ["bash", "-c", port_check_cmd],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=15
         )
         
         port_in_use = port_result.returncode == 0 and port_result.stdout.strip() != "none"
         
         # Method 3: Check systemctl status of teleop service
-        service_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'systemctl is-active teleop'"
+        service_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'systemctl is-active teleop'"
         
         service_result = subprocess.run(
             ["bash", "-c", service_check_cmd],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=15
         )
         
         service_active = service_result.stdout.strip() == "active"
@@ -1436,6 +1438,196 @@ async def get_teleoperation_status(robot_ip: str):
             "error": str(e),
             "robot_ip": robot_ip
         })
+
+@app.post("/api/robot/{robot_ip}/stop-teleop")
+async def stop_teleoperation(robot_ip: str):
+    """Stop teleoperation services on a robot"""
+    try:
+        print(f"🛑 Stopping teleoperation on {robot_ip}...")
+        
+        # First, check if services exist before trying to stop them
+        # Check if teleop service exists
+        teleop_exists_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'systemctl list-unit-files | grep -q \"^teleop.service\" && echo \"exists\" || echo \"not_installed\"'"
+        
+        teleop_exists_result = subprocess.run(
+            ["bash", "-c", teleop_exists_cmd],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        teleop_exists = teleop_exists_result.stdout.strip() == "exists"
+        
+        # Check if lekiwi service exists
+        lekiwi_exists_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'systemctl list-unit-files | grep -q \"^lekiwi.service\" && echo \"exists\" || echo \"not_installed\"'"
+        
+        lekiwi_exists_result = subprocess.run(
+            ["bash", "-c", lekiwi_exists_cmd],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        lekiwi_exists = lekiwi_exists_result.stdout.strip() == "exists"
+        
+        # If neither service exists, return error
+        if not teleop_exists and not lekiwi_exists:
+            return JSONResponse(content={
+                "success": False,
+                "services_stopped": {
+                    "teleop": False,
+                    "lekiwi": False
+                },
+                "details": {
+                    "teleop_status": "not installed",
+                    "lekiwi_status": "not installed",
+                    "teleop_exists": False,
+                    "lekiwi_exists": False
+                },
+                "message": "Services are not installed on this robot",
+                "robot_ip": robot_ip
+            }, status_code=400)
+        
+        # Track service statuses
+        teleop_final_status = "not installed"
+        lekiwi_final_status = "not installed"
+        teleop_stopped = False
+        lekiwi_stopped = False
+        
+        # Stop teleop service if it exists
+        if teleop_exists:
+            # Check current status
+            teleop_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'systemctl is-active teleop'"
+            teleop_status = subprocess.run(
+                ["bash", "-c", teleop_check_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            teleop_current_status = teleop_status.stdout.strip()
+            
+            if teleop_current_status == "active":
+                # Service is running, stop it
+                teleop_stop_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'sudo systemctl stop teleop'"
+                teleop_result = subprocess.run(
+                    ["bash", "-c", teleop_stop_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                
+                # Check if stop was successful
+                teleop_check_after = subprocess.run(
+                    ["bash", "-c", teleop_check_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if teleop_check_after.stdout.strip() != "active":
+                    teleop_stopped = True
+                    teleop_final_status = "stopped"
+                else:
+                    teleop_final_status = "failed to stop"
+            else:
+                # Service exists but is already stopped
+                teleop_stopped = True
+                teleop_final_status = "already stopped"
+        
+        # Stop lekiwi service if it exists
+        if lekiwi_exists:
+            # Check current status
+            lekiwi_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'systemctl is-active lekiwi'"
+            lekiwi_status = subprocess.run(
+                ["bash", "-c", lekiwi_check_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            lekiwi_current_status = lekiwi_status.stdout.strip()
+            
+            if lekiwi_current_status == "active":
+                # Service is running, stop it
+                lekiwi_stop_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'sudo systemctl stop lekiwi'"
+                lekiwi_result = subprocess.run(
+                    ["bash", "-c", lekiwi_stop_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                
+                # Check if stop was successful
+                lekiwi_check_after = subprocess.run(
+                    ["bash", "-c", lekiwi_check_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if lekiwi_check_after.stdout.strip() != "active":
+                    lekiwi_stopped = True
+                    lekiwi_final_status = "stopped"
+                else:
+                    lekiwi_final_status = "failed to stop"
+            else:
+                # Service exists but is already stopped
+                lekiwi_stopped = True
+                lekiwi_final_status = "already stopped"
+        
+        # Determine overall success
+        # Success means: all existing services are stopped (either were already stopped or we stopped them)
+        success = True
+        if teleop_exists and not teleop_stopped:
+            success = False
+        if lekiwi_exists and not lekiwi_stopped:
+            success = False
+        
+        # Create appropriate message
+        if success:
+            if not teleop_exists and not lekiwi_exists:
+                message = "No services installed to stop"
+            elif teleop_final_status == "already stopped" and lekiwi_final_status == "already stopped":
+                message = "Services were already stopped"
+            elif teleop_final_status == "stopped" or lekiwi_final_status == "stopped":
+                message = "Services stopped successfully"
+            else:
+                message = "Services are not running"
+        else:
+            message = "Failed to stop some services"
+        
+        return JSONResponse(content={
+            "success": success,
+            "services_stopped": {
+                "teleop": teleop_stopped,
+                "lekiwi": lekiwi_stopped
+            },
+            "details": {
+                "teleop_status": teleop_final_status,
+                "lekiwi_status": lekiwi_final_status,
+                "teleop_exists": teleop_exists,
+                "lekiwi_exists": lekiwi_exists
+            },
+            "message": message,
+            "robot_ip": robot_ip
+        })
+        
+    except subprocess.TimeoutExpired:
+        return JSONResponse(content={
+            "success": False,
+            "error": "Connection timeout",
+            "message": "Failed to connect to robot",
+            "robot_ip": robot_ip
+        }, status_code=408)
+    except Exception as e:
+        print(f"Stop teleoperation error for {robot_ip}: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": str(e),
+            "message": f"Error stopping teleoperation: {str(e)}",
+            "robot_ip": robot_ip
+        }, status_code=500)
 
 # Main entry point
 if __name__ == "__main__":

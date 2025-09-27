@@ -94,33 +94,36 @@ class RobotVersioning:
                 
                 # Fetch file with proper permissions preservation
                 if filetype == "binary":
-                    # For binary files, preserve exact copy
+                    # For binary files, preserve exact copy with adequate timeout
                     cmd = [
                         "sshpass", "-p", "lekiwi", "scp", "-p",
                         "-o", "StrictHostKeyChecking=no",
+                        "-o", "ConnectTimeout=15",
                         f"lekiwi@{robot_ip}:{filepath}",
                         str(local_file)
                     ]
                 else:
-                    # For text files, we can read content
+                    # For text files, we can read content with adequate timeout
                     cmd = [
                         "sshpass", "-p", "lekiwi", "scp",
                         "-o", "StrictHostKeyChecking=no",
+                        "-o", "ConnectTimeout=15",
                         f"lekiwi@{robot_ip}:{filepath}",
                         str(local_file)
                     ]
                 
-                result = subprocess.run(cmd, capture_output=True)
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
                 
                 if result.returncode == 0 and local_file.exists():
-                    # Get file permissions
+                    # Get file permissions with adequate timeout
                     perm_cmd = [
                         "sshpass", "-p", "lekiwi", "ssh",
                         "-o", "StrictHostKeyChecking=no",
+                        "-o", "ConnectTimeout=15",
                         f"lekiwi@{robot_ip}",
                         f"stat -c '%a' {filepath}"
                     ]
-                    perm_result = subprocess.run(perm_cmd, capture_output=True, text=True)
+                    perm_result = subprocess.run(perm_cmd, capture_output=True, text=True, timeout=20)
                     permissions = perm_result.stdout.strip() if perm_result.returncode == 0 else "644"
                     
                     # Calculate checksum
@@ -204,15 +207,16 @@ class RobotVersioning:
         
         # Check each file in the version
         for filepath, local_path in version_info["files"].items():
-            # Get checksum from target robot
+            # Get checksum from target robot with adequate timeout
             cmd = [
                 "sshpass", "-p", "lekiwi", "ssh",
                 "-o", "StrictHostKeyChecking=no",
+                "-o", "ConnectTimeout=15",
                 f"lekiwi@{target_robot}",
                 f"[ -f {filepath} ] && sha256sum {filepath} | cut -d' ' -f1 || echo 'MISSING'"
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
             
             if result.returncode == 0:
                 target_checksum = result.stdout.strip()
@@ -281,16 +285,17 @@ class RobotVersioning:
             
             print(f"  Deploying {filepath}...")
             
-            # First copy to /tmp on target
+            # First copy to /tmp on target with adequate timeout
             remote_tmp = f"/tmp/{local_path.name}"
             cmd = [
                 "sshpass", "-p", "lekiwi", "scp",
                 "-o", "StrictHostKeyChecking=no",
+                "-o", "ConnectTimeout=15",
                 str(local_path),
                 f"lekiwi@{target_robot}:{remote_tmp}"
             ]
             
-            result = subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
             
             if result.returncode == 0:
                 # Create directory if needed and move file with sudo
@@ -307,10 +312,11 @@ class RobotVersioning:
                     ssh_cmd = [
                         "sshpass", "-p", "lekiwi", "ssh",
                         "-o", "StrictHostKeyChecking=no",
+                        "-o", "ConnectTimeout=15",
                         f"lekiwi@{target_robot}",
                         move_cmd
                     ]
-                    subprocess.run(ssh_cmd, capture_output=True)
+                    subprocess.run(ssh_cmd, capture_output=True, timeout=20)
                 
                 success_count += 1
                 print(f"    ✅ Deployed successfully")
@@ -335,10 +341,11 @@ class RobotVersioning:
                 ssh_cmd = [
                     "sshpass", "-p", "lekiwi", "ssh",
                     "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=15",
                     f"lekiwi@{target_robot}",
                     cmd
                 ]
-                subprocess.run(ssh_cmd, capture_output=True)
+                subprocess.run(ssh_cmd, capture_output=True, timeout=20)
         
         print(f"\n📊 Deployment Summary:")
         print(f"   ✅ Successfully deployed: {success_count}/{len(files_to_deploy)}")
@@ -352,15 +359,16 @@ class RobotVersioning:
     
     def configure_robot_specific(self, robot_ip: str):
         """Configure robot-specific files like teleop.ini"""
-        # Get MAC address for device ID
+        # Get MAC address for device ID with adequate timeout
         cmd = [
             "sshpass", "-p", "lekiwi", "ssh",
             "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=15",
             f"lekiwi@{robot_ip}",
             "ip link show eth0 | grep ether | awk '{print $2}'"
         ]
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         
         if result.returncode == 0:
             mac = result.stdout.strip()
@@ -400,23 +408,25 @@ camera2 = v4l2src device=/dev/video0 !videoflip video-direction=180
                     f.write(teleop_config)
                     temp_file = f.name
                 
-                # Copy to robot
+                # Copy to robot with adequate timeout
                 copy_cmd = [
                     "sshpass", "-p", "lekiwi", "scp",
                     "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=15",
                     temp_file,
                     f"lekiwi@{robot_ip}:/tmp/teleop.ini"
                 ]
-                subprocess.run(copy_cmd, capture_output=True)
+                subprocess.run(copy_cmd, capture_output=True, timeout=30)
                 
-                # Move to correct location
+                # Move to correct location with adequate timeout
                 move_cmd = [
                     "sshpass", "-p", "lekiwi", "ssh",
                     "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=15",
                     f"lekiwi@{robot_ip}",
                     "sudo mv /tmp/teleop.ini /opt/frodobots/teleop.ini && sudo chown lekiwi:lekiwi /opt/frodobots/teleop.ini"
                 ]
-                subprocess.run(move_cmd, capture_output=True)
+                subprocess.run(move_cmd, capture_output=True, timeout=20)
                 
                 # Clean up temp file
                 os.unlink(temp_file)
