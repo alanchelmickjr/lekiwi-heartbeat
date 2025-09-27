@@ -9,19 +9,26 @@ import json
 def detect_robot_type(robot_ip):
     """
     Detect if a robot is regular LeKiwi or XLERobot
-    XLERobot identified by hostname pattern containing 'xlerobot'
+    XLERobot identified by:
+    1. Presence of XLEROBOT-specific libraries in /opt/frodobots/lib/
+    2. Hostname pattern containing 'xlerobot' (fallback)
     Returns: 'xlerobot', 'lekiwi', 'lekiwi-lite', or 'unknown'
     """
     try:
-        # First, check hostname (most reliable for XLE)
-        cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no lekiwi@{robot_ip} 'hostname'"
+        # FIRST: Check for XLEROBOT-specific libraries (most reliable for XLE)
+        # XLEROBOTs have libteleop_*_xlerobot.so files
+        cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 lekiwi@{robot_ip} 'ls /opt/frodobots/lib/libteleop_*xlerobot*.so 2>/dev/null | wc -l'"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
         
         if result.returncode == 0 and result.stdout:
-            hostname = result.stdout.strip().lower()
-            # XLERobot identified by hostname pattern
-            if 'xlerobot' in hostname:
+            xlerobot_lib_count = result.stdout.strip()
+            if xlerobot_lib_count.isdigit() and int(xlerobot_lib_count) > 0:
+                # XLEROBOT-specific libraries found - this is an XLEROBOT
+                print(f"Detected XLEROBOT at {robot_ip} (has XLEROBOT-specific libraries)")
                 return 'xlerobot'
+        
+        # No longer using hostname as fallback - it causes false positives
+        # Only XLEROBOT-specific libraries are reliable indicators
         
         # Check binary size AND control library together for other robot types
         cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no lekiwi@{robot_ip} 'stat -c %s /opt/frodobots/teleop_agent 2>/dev/null; grep ctrl /opt/frodobots/teleop.ini 2>/dev/null'"
@@ -56,10 +63,11 @@ def get_robot_capabilities(robot_ip):
     """
     Get detailed robot capabilities based on type
     XLERobot is the advanced bimanual (dual-arm) version with 3 cameras
+    Detected by /opt/frodobots directory OR hostname pattern
     """
     robot_type = detect_robot_type(robot_ip)
     
-    # XLERobot detected by hostname pattern
+    # XLERobot detected by directory check or hostname pattern
     is_xle = robot_type == 'xlerobot'
     
     capabilities = {

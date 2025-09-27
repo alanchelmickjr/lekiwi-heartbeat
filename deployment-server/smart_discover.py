@@ -55,13 +55,19 @@ def try_ssh_login(ip, username='lekiwi', password='lekiwi', timeout=5):
         stdin, stdout, stderr = client.exec_command('cat /proc/device-tree/model 2>/dev/null || echo "not-pi"')
         model = stdout.read().decode().strip()
         
+        # Check for XLEROBOT-specific libraries
+        stdin, stdout, stderr = client.exec_command('ls /opt/frodobots/lib/libteleop_*xlerobot*.so 2>/dev/null | wc -l')
+        xlerobot_lib_count = stdout.read().decode().strip()
+        has_xlerobot_libs = xlerobot_lib_count.isdigit() and int(xlerobot_lib_count) > 0
+        
         client.close()
         
         return {
             'success': True,
             'hostname': hostname,
             'is_pi': 'Raspberry Pi' in model or 'not-pi' not in model,
-            'model': model if 'not-pi' not in model else None
+            'model': model if 'not-pi' not in model else None,
+            'has_xlerobot_libs': has_xlerobot_libs
         }
     except paramiko.AuthenticationException:
         return {'success': False, 'reason': 'auth_failed'}
@@ -79,7 +85,8 @@ def scan_host(ip):
         'is_robot': False,
         'hostname': None,
         'is_pi': False,
-        'model': None
+        'model': None,
+        'robot_type': None
     }
     
     # First check if SSH port is open - balanced timeout
@@ -128,10 +135,14 @@ def scan_host(ip):
             result['is_robot'] = True
             logging.debug(f"[ROBOT] Confirmed robot at {ip}: {result['hostname']}")
             
-            # Detect if it's an XLE robot by hostname pattern only
-            if 'xlerobot' in hostname_lower:
+            # Enhanced XLE robot detection:
+            # Check for XLEROBOT-specific libraries (only reliable method)
+            if login_result.get('has_xlerobot_libs', False):
                 result['robot_type'] = 'xlerobot'
+                logging.debug(f"[XLEROBOT] Detected XLE robot at {ip} (has XLEROBOT-specific libraries)")
             else:
+                # No XLEROBOT-specific libraries = regular LEKIWI
+                # Hostname is not reliable (can be renamed incorrectly)
                 result['robot_type'] = 'lekiwi'
     else:
         # Even if login fails, we may have detected it's a Pi from the banner

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>LeKiwi Deploy - Vercel for Robots</title>
     <style>
         * {
@@ -159,6 +159,23 @@
             background: var(--bg-lighter);
             border-radius: 6px;
             border: 1px solid var(--border);
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .camera-preview.fullscreen-mode {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 9999;
+            margin: 0;
+            border-radius: 0;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .camera-thumbnail {
@@ -171,12 +188,64 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .fullscreen-mode .camera-thumbnail {
+            height: 100vh;
+            width: 100vw;
+            max-width: 100%;
+            max-height: 100%;
         }
 
         .camera-thumbnail img {
             width: 100%;
             height: 100%;
             object-fit: cover;
+            transition: all 0.3s ease;
+        }
+
+        .fullscreen-mode .camera-thumbnail img {
+            object-fit: contain;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Fullscreen controls */
+        .fullscreen-controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: none;
+            gap: 10px;
+            transition: opacity 0.3s ease;
+        }
+
+        .fullscreen-mode .fullscreen-controls {
+            display: flex;
+        }
+
+        .fullscreen-controls.controls-hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .fullscreen-btn {
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 10px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .fullscreen-btn:hover {
+            background: rgba(0, 0, 0, 0.9);
+            border-color: var(--primary);
         }
 
         .camera-thumbnail .camera-label {
@@ -656,17 +725,253 @@
             }
         }
 
-        /* Responsive modal */
+        /* Collapsible sections */
+        .collapsible-section {
+            margin-bottom: 1rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            background: var(--bg-card);
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.3s ease;
+        }
+
+        .collapsible-header:hover {
+            background: var(--bg-lighter);
+        }
+
+        .collapsible-header h2, .collapsible-header h3 {
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .collapse-icon {
+            font-size: 1.2rem;
+            transition: transform 0.3s ease;
+            color: var(--text-secondary);
+        }
+
+        .collapsible-section.collapsed .collapse-icon {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            padding: 1.5rem;
+            background: var(--bg-card);
+            max-height: 2000px;
+            transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+        }
+
+        .collapsible-section.collapsed .collapsible-content {
+            max-height: 0;
+            padding: 0 1.5rem;
+            opacity: 0;
+            overflow: hidden;
+        }
+
+        /* Mobile responsive styles */
         @media (max-width: 768px) {
+            body {
+                font-size: 14px;
+            }
+
+            .header {
+                padding: 0.8rem 1rem;
+            }
+
+            .header-content {
+                flex-direction: column;
+                gap: 1rem;
+                align-items: flex-start;
+            }
+
+            .nav-tabs {
+                width: 100%;
+                overflow-x: auto;
+                gap: 1rem;
+                padding-bottom: 0.5rem;
+            }
+
+            .main-container {
+                padding: 1rem;
+            }
+
+            .robots-container {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            .robot-card {
+                padding: 1rem;
+            }
+
+            .discovery-input {
+                flex-direction: column;
+            }
+
+            .input-group {
+                width: 100%;
+            }
+
+            .quick-deploy {
+                padding: 0.8rem 1rem;
+            }
+
+            .quick-deploy-content {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .quick-deploy-form {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .btn {
+                padding: 0.8rem 1rem;
+                min-height: 44px;
+                min-width: 44px;
+                font-size: 14px;
+            }
+
+            .btn-small {
+                min-height: 44px;
+                padding: 0.6rem 1rem;
+            }
+
             .modal-content {
                 width: 95%;
                 max-height: 90vh;
                 padding: 1rem;
+                min-width: unset;
             }
             
             .ssh-terminal {
                 height: 50vh;
                 font-size: 12px;
+            }
+
+            .deployment-panel {
+                padding: 1rem;
+            }
+
+            .log-viewer {
+                height: 150px;
+                font-size: 12px;
+            }
+
+            .camera-preview {
+                flex-direction: column;
+            }
+
+            .camera-thumbnail {
+                height: 120px;
+            }
+
+            /* Touch-friendly spacing */
+            .robot-status {
+                padding: 0.3rem 0.8rem;
+            }
+
+            .deployment-badge {
+                padding: 0.4rem 1rem;
+            }
+
+            /* Fullscreen adjustments for mobile */
+            .fullscreen-controls {
+                top: 10px;
+                right: 10px;
+            }
+
+            .fullscreen-btn {
+                padding: 12px 16px;
+                font-size: 16px;
+            }
+        }
+
+        /* Tablet responsive */
+        @media (min-width: 769px) and (max-width: 1024px) {
+            .robots-container {
+                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            }
+
+            .main-container {
+                padding: 1.5rem;
+            }
+        }
+
+        /* Touch-friendly hover states */
+        @media (hover: none) {
+            .robot-card:hover {
+                transform: none;
+            }
+
+            .btn:hover {
+                transform: none;
+            }
+
+            .nav-tab:hover {
+                border-bottom-color: transparent;
+            }
+
+            .robot-card:active {
+                transform: scale(0.98);
+            }
+
+            .btn:active {
+                transform: scale(0.95);
+            }
+        }
+
+        /* Improved visibility on small screens */
+        @media (max-width: 480px) {
+            .logo {
+                font-size: 1.1rem;
+            }
+
+            .robot-name {
+                font-size: 1rem;
+            }
+
+            .robot-info {
+                font-size: 0.8rem;
+            }
+
+            .status-dot {
+                width: 6px;
+                height: 6px;
+            }
+
+            .camera-label {
+                font-size: 0.6rem;
+            }
+        }
+
+        /* Landscape mode adjustments */
+        @media (max-height: 600px) and (orientation: landscape) {
+            .header {
+                position: relative;
+                backdrop-filter: none;
+            }
+
+            .quick-deploy {
+                position: relative;
+            }
+
+            .log-viewer {
+                height: 120px;
             }
         }
     </style>
@@ -689,32 +994,37 @@
     <!-- Main Content -->
     <div class="main-container">
         <!-- Discovery Section -->
-        <div class="discovery-section">
-            <div class="discovery-header">
-                <div>
-                    <h2>Robot Fleet Discovery</h2>
-                    <p style="color: var(--text-secondary); margin-top: 0.5rem;">
-                        <span id="robot-count">0</span> robots found • 
-                        <span id="online-count">0</span> online • 
-                        <span id="scanning-status">Ready to scan</span>
-                    </p>
+            <div class="collapsible-section" id="discovery-section">
+                <div class="collapsible-header" onclick="toggleSection('discovery-section')">
+                    <h2>🔍 Robot Fleet Discovery</h2>
+                    <span class="collapse-icon">▼</span>
                 </div>
-                <button class="btn" id="discover-btn" onclick="discoverRobots()">
-                    <span id="scan-icon">🔍</span>
-                    <span id="scan-text">Discover Robots</span>
-                </button>
+                <div class="collapsible-content">
+                    <div class="discovery-header">
+                        <div>
+                            <p style="color: var(--text-secondary); margin-top: 0.5rem;">
+                                <span id="robot-count">0</span> robots found •
+                                <span id="online-count">0</span> online •
+                                <span id="scanning-status">Ready to scan</span>
+                            </p>
+                        </div>
+                        <button class="btn" id="discover-btn" onclick="discoverRobots()">
+                            <span id="scan-icon">🔍</span>
+                            <span id="scan-text">Discover Robots</span>
+                        </button>
+                    </div>
+                    <div class="discovery-input">
+                        <div class="input-group">
+                            <input type="text" class="form-input" id="ip-range" placeholder="IP Range (e.g., 192.168.88.1-254)" value="192.168.88.1-254">
+                            <button class="btn btn-ghost" onclick="scanRange()">Scan Range</button>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" class="form-input" id="single-ip" placeholder="Add single IP">
+                            <button class="btn btn-ghost" onclick="addRobot()">Add Robot</button>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="discovery-input">
-                <div class="input-group">
-                    <input type="text" class="form-input" id="ip-range" placeholder="IP Range (e.g., 192.168.88.1-254)" value="192.168.88.1-254">
-                    <button class="btn btn-ghost" onclick="scanRange()">Scan Range</button>
-                </div>
-                <div class="input-group">
-                    <input type="text" class="form-input" id="single-ip" placeholder="Add single IP">
-                    <button class="btn btn-ghost" onclick="addRobot()">Add Robot</button>
-                </div>
-            </div>
-        </div>
 
         <!-- Robots Grid -->
         <div class="robots-container" id="robots-grid">
@@ -741,13 +1051,26 @@
         </div>
 
         <!-- Selected Robot Panel -->
-        <div class="deployment-panel" id="robot-panel" style="display: none;">
-            <h3 id="selected-robot-name">Robot Details</h3>
-            <div class="deployment-list" id="robot-deployments">
-                <!-- Deployments for selected robot -->
+        <div class="collapsible-section" id="robot-details-section" style="display: none;">
+            <div class="collapsible-header" onclick="toggleSection('robot-details-section')">
+                <h3 id="selected-robot-name">Robot Details</h3>
+                <span class="collapse-icon">▼</span>
             </div>
-            <div class="log-viewer" id="robot-logs">
-                <!-- Logs for selected robot -->
+            <div class="collapsible-content">
+                <div class="deployment-list" id="robot-deployments">
+                    <!-- Deployments for selected robot -->
+                </div>
+                <div class="collapsible-section" id="logs-section">
+                    <div class="collapsible-header" onclick="toggleSection('logs-section')">
+                        <h4>📋 Logs & Events</h4>
+                        <span class="collapse-icon">▼</span>
+                    </div>
+                    <div class="collapsible-content">
+                        <div class="log-viewer" id="robot-logs">
+                            <!-- Logs for selected robot -->
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -784,6 +1107,11 @@
         </div>
     </div>
 
+    <!-- Fullscreen Controls -->
+    <div class="fullscreen-controls" id="fullscreen-controls">
+        <button class="fullscreen-btn" onclick="exitFullscreen()">✕ Exit Fullscreen</button>
+    </div>
+
     <script>
         // Configuration
         const API_URL = window.location.origin;
@@ -797,6 +1125,8 @@
         let refreshInterval = null;
         let cameraRefreshInterval = null;
         let teleopCheckInterval = null;
+        let fullscreenElement = null;
+        let mouseMoveTimer = null;
         
         // Performance optimization state
         let cameraUpdatesEnabled = true;
@@ -824,8 +1154,101 @@
             return new Promise(resolve => setTimeout(resolve, ms));
         }
 
+        // Collapsible sections management
+        function toggleSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            if (section) {
+                section.classList.toggle('collapsed');
+                
+                // Save state to localStorage
+                const isCollapsed = section.classList.contains('collapsed');
+                localStorage.setItem(`section-${sectionId}-collapsed`, isCollapsed);
+            }
+        }
+
+        // Restore collapsible states from localStorage
+        function restoreCollapsibleStates() {
+            const sections = document.querySelectorAll('.collapsible-section');
+            sections.forEach(section => {
+                const savedState = localStorage.getItem(`section-${section.id}-collapsed`);
+                if (savedState === 'true') {
+                    section.classList.add('collapsed');
+                }
+            });
+        }
+
+        // Fullscreen functionality
+        function enterFullscreen(element) {
+            fullscreenElement = element;
+            element.classList.add('fullscreen-mode');
+            document.body.style.overflow = 'hidden';
+            
+            // Show controls initially
+            const controls = document.getElementById('fullscreen-controls');
+            controls.classList.remove('controls-hidden');
+            
+            // Start auto-hide timer
+            resetMouseMoveTimer();
+            
+            // Add mouse move listener
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('touchstart', handleMouseMove);
+        }
+
+        function exitFullscreen() {
+            if (fullscreenElement) {
+                fullscreenElement.classList.remove('fullscreen-mode');
+                fullscreenElement = null;
+                document.body.style.overflow = '';
+                
+                // Remove mouse move listener
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('touchstart', handleMouseMove);
+                
+                // Clear timer
+                if (mouseMoveTimer) {
+                    clearTimeout(mouseMoveTimer);
+                    mouseMoveTimer = null;
+                }
+            }
+        }
+
+        function handleMouseMove() {
+            if (!fullscreenElement) return;
+            
+            // Show controls
+            const controls = document.getElementById('fullscreen-controls');
+            controls.classList.remove('controls-hidden');
+            
+            // Reset timer
+            resetMouseMoveTimer();
+        }
+
+        function resetMouseMoveTimer() {
+            // Clear existing timer
+            if (mouseMoveTimer) {
+                clearTimeout(mouseMoveTimer);
+            }
+            
+            // Set new timer to hide controls after 3 seconds
+            mouseMoveTimer = setTimeout(() => {
+                const controls = document.getElementById('fullscreen-controls');
+                controls.classList.add('controls-hidden');
+            }, 3000);
+        }
+
+        // Handle ESC key to exit fullscreen
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && fullscreenElement) {
+                exitFullscreen();
+            }
+        });
+
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
+            // Restore collapsible states
+            restoreCollapsibleStates();
+            
             // Clear any existing state and intervals when page loads/reloads
             robots.clear();
             selectedRobot = null;
@@ -1839,6 +2262,7 @@
                                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
                                      alt="RealSense Camera"
                                      data-has-loaded="false"
+                                     onclick="enterFullscreen(this.closest('.camera-preview'))"
                                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
                             </div>
                             <div class="camera-thumbnail">
@@ -1847,6 +2271,7 @@
                                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
                                      alt="Claw Camera 1"
                                      data-has-loaded="false"
+                                     onclick="enterFullscreen(this.closest('.camera-preview'))"
                                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
                             </div>
                             <div class="camera-thumbnail">
@@ -1855,6 +2280,7 @@
                                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
                                      alt="Claw Camera 2"
                                      data-has-loaded="false"
+                                     onclick="enterFullscreen(this.closest('.camera-preview'))"
                                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
                             </div>
                         </div>
@@ -1866,6 +2292,7 @@
                                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
                                      alt="Front Camera"
                                      data-has-loaded="false"
+                                     onclick="enterFullscreen(this.closest('.camera-preview'))"
                                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
                             </div>
                             <div class="camera-thumbnail">
@@ -1874,6 +2301,7 @@
                                      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='120' viewBox='0 0 160 120'%3E%3Crect width='160' height='120' fill='%23111'/%3E%3Ctext x='80' y='60' font-family='sans-serif' font-size='12' fill='%23666' text-anchor='middle'%3ELoading...%3C/text%3E%3C/svg%3E"
                                      alt="Wrist Camera"
                                      data-has-loaded="false"
+                                     onclick="enterFullscreen(this.closest('.camera-preview'))"
                                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%27160%27 height=%27120%27 viewBox=%270 0 160 120%27%3E%3Crect width=%27160%27 height=%27120%27 fill=%27%23111%27/%3E%3Ctext x=%2780%27 y=%2760%27 font-family=%27sans-serif%27 font-size=%2712%27 fill=%27%23666%27 text-anchor=%27middle%27%3ENo Signal%3C/text%3E%3C/svg%3E'">
                             </div>
                         </div>
@@ -2131,11 +2559,14 @@
             updateRobotGrid();
             
             // Show robot panel
-            const panel = document.getElementById('robot-panel');
+            const panel = document.getElementById('robot-details-section');
             panel.style.display = 'block';
             
-            document.getElementById('selected-robot-name').textContent = 
-                `${robot.id} - ${robot.ip}`;
+            // Expand the section if it's collapsed
+            panel.classList.remove('collapsed');
+            
+            document.getElementById('selected-robot-name').textContent =
+                `🤖 ${robot.id} - ${robot.ip}`;
             
             // Load deployments for this robot
             await loadRobotDeployments(robot);
@@ -2546,7 +2977,7 @@
         function showDeploymentsTab() {
             // Hide robots grid
             document.getElementById('robots-grid').style.display = 'none';
-            document.getElementById('robot-panel').style.display = 'none';
+            document.getElementById('robot-details-section').style.display = 'none';
             
             // Show deployments tab
             const deploymentsTab = document.getElementById('deployments-tab');
@@ -2593,7 +3024,7 @@
             // Since we only have robots tab now, just ensure it's visible
             document.getElementById('robots-grid').style.display = 'grid';
             if (selectedRobot) {
-                document.getElementById('robot-panel').style.display = 'block';
+                document.getElementById('robot-details-section').style.display = 'block';
             }
         }
 
