@@ -1,0 +1,332 @@
+#cloud-config
+# Cloud-init configuration for Lekiwi/XLE Robot Factory Install
+# This provides zero-touch provisioning for both USB and network boot
+
+hostname: robot-unconfigured
+manage_etc_hosts: true
+locale: en_US.UTF-8
+timezone: UTC
+
+# Users and authentication
+users:
+  - name: robot
+    groups: [adm, dialout, cdrom, sudo, audio, video, plugdev, games, users, input, netdev, gpio, i2c, spi]
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: $6$rounds=4096$robot$hashed_password_here  # Change this!
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3... # Add your SSH public key here
+
+# System updates and packages
+package_update: true
+package_upgrade: false
+packages:
+  # System essentials
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - net-tools
+  - i2c-tools
+  - python3-pip
+  - python3-dev
+  - build-essential
+  - cmake
+  - pkg-config
+  # Raspberry Pi specific
+  - raspi-config
+  - libraspberrypi-bin
+  - libraspberrypi-dev
+  # Hardware support
+  - python3-smbus
+  - python3-rpi.gpio
+  - pigpio
+  - python3-pigpio
+  # Network tools
+  - avahi-daemon
+  - avahi-utils
+  - ntp
+  # Monitoring
+  - prometheus-node-exporter
+
+# Enable required kernel modules
+bootcmd:
+  - [ modprobe, i2c-dev ]
+  - [ modprobe, i2c-bcm2835 ]
+  - [ modprobe, spi-bcm2835 ]
+  - [ sh, -c, 'echo "i2c-dev" >> /etc/modules' ]
+  - [ sh, -c, 'echo "i2c-bcm2835" >> /etc/modules' ]
+
+# System configuration
+write_files:
+  # Robot detection script
+  - path: /usr/local/bin/detect-robot-type.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Detect robot type based on hardware
+      
+      detect_realsense() {
+          lsusb | grep -q "Intel Corp.*RealSense" && return 0
+          [ -d "/sys/class/video4linux" ] && find /sys/class/video4linux -name "name" -exec grep -l "RealSense" {} \; | grep -q . && return 0
+          return 1
+      }
+      
+      detect_servo_controller() {
+          i2cdetect -y 1 0x40 0x40 2>/dev/null | grep -q "40" && return 0
+          return 1
+      }
+      
+      detect_xle_arms() {
+          lsusb | grep -qE "(STMicroelectronics|FTDI|Robotis)" && return 0
+          return 1
+      }
+      
+      if detect_realsense || detect_xle_arms; then
+          echo "xle"
+      elif detect_servo_controller; then
+          echo "lekiwi"
+      else
+          echo "unknown"
+      fi
+
+  # Robot configuration service
+  - path: /etc/systemd/system/robot-configure.service
+    content: |
+      [Unit]
+      Description=Robot Configuration Service
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/etc/robot.conf
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/configure-robot.sh
+      RemainAfterExit=yes
+      StandardOutput=journal
+      StandardError=journal
+      
+      [Install]
+      WantedBy=multi-user.target
+
+  # Configuration script
+  - path: /usr/local/bin/configure-robot.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      
+      echo "Starting robot configuration..."
+      
+      # Detect robot type
+      ROBOT_TYPE=$(/usr/local/bin/detect-robot-type.sh)
+      echo "Detected robot type: ${ROBOT_TYPE}"
+      
+      # Generate unique identifiers
+      ROBOT_ID=$(cat /proc/sys/kernel/random/uuid)
+      MAC_ADDR=$(ip link show | awk '/ether/ {print $2}' | head -1 | tr -d ':')
+      HOSTNAME="${ROBOT_TYPE}-${MAC_ADDR: -6}"
+      
+      # Set hostname
+      hostnamectl set-hostname ${HOSTNAME}
+      echo ${HOSTNAME} > /etc/hostname
+      
+      # Update hosts file
+      cat > /etc/hosts <<EOF
+      127.0.0.1 localhost
+      127.0.1.1 ${HOSTNAME}
+      EOF
+      
+      # Save configuration
+      cat > /etc/robot.conf <<EOF
+      ROBOT_TYPE=${ROBOT_TYPE}
+      ROBOT_ID=${ROBOT_ID}
+      HOSTNAME=${HOSTNAME}
+      MAC_ADDRESS=${MAC_ADDR}
+      CONFIGURED_AT=$(date -Iseconds)
+      CLOUD_INIT_VERSION=1.0.0
+      EOF
+      
+      # Configure I2C speed for servo communication
+      if [ "${ROBOT_TYPE}" = "lekiwi" ]; then
+          echo "dtparam=i2c_arm=on,i2c_arm_baudrate=400000" >> /boot/config.txt
+      fi
+      
+      # Enable camera for XLE
+      if [ "${ROBOT_TYPE}" = "xle" ]; then
+          echo "start_x=1" >> /boot/config.txt
+          echo "gpu_mem=128" >> /boot/config.txt
+      fi
+      
+      # Install monitoring agent
+      /usr/local/bin/install-agent.sh
+      
+      echo "Robot configuration complete!"
+
+  # Agent installation script
+  - path: /usr/local/bin/install-agent.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      
+      # Load robot configuration
+      source /etc/robot.conf
+      
+      AGENT_VERSION="1.0.0"
+      AGENT_URL="https://releases.lekiwi.io/agent/v${AGENT_VERSION}/lekiwi-agent-arm64"
+      AGENT_BIN="/usr/local/bin/lekiwi-agent"
+      
+      # Download agent binary
+      echo "Downloading agent v${AGENT_VERSION}..."
+      curl -sSL ${AGENT_URL} -o ${AGENT_BIN} || {
+          # Fallback to local build
+          echo "Download failed, attempting local build..."
+          cd /tmp
+          git clone https://github.com/lekiwi/factory-install.git
+          cd factory-install/agent
+          cargo build --release
+          cp target/release/lekiwi-agent ${AGENT_BIN}
+      }
+      
+      chmod +x ${AGENT_BIN}
+      
+      # Create systemd service
+      cat > /etc/systemd/system/lekiwi-agent.service <<EOF
+      [Unit]
+      Description=Lekiwi Monitoring Agent
+      After=network-online.target
+      Wants=network-online.target
+      
+      [Service]
+      Type=simple
+      ExecStart=${AGENT_BIN} --robot-id ${ROBOT_ID} --server https://control.lekiwi.io:8443
+      Restart=always
+      RestartSec=10
+      User=robot
+      Group=robot
+      
+      # Resource limits
+      MemoryMax=50M
+      CPUQuota=10%
+      
+      # Security hardening
+      PrivateTmp=yes
+      ProtectSystem=strict
+      ProtectHome=yes
+      NoNewPrivileges=yes
+      ReadWritePaths=/var/lib/lekiwi-agent
+      
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      
+      # Create state directory
+      mkdir -p /var/lib/lekiwi-agent
+      chown robot:robot /var/lib/lekiwi-agent
+      
+      # Enable and start service
+      systemctl daemon-reload
+      systemctl enable lekiwi-agent.service
+      systemctl start lekiwi-agent.service
+      
+      echo "Agent installed and started"
+
+  # Network configuration
+  - path: /etc/netplan/01-netcfg.yaml
+    content: |
+      network:
+        version: 2
+        ethernets:
+          eth0:
+            dhcp4: true
+            dhcp6: false
+            optional: true
+        wifis:
+          wlan0:
+            dhcp4: true
+            dhcp6: false
+            optional: true
+            access-points:
+              "RobotNetwork":
+                password: "changeme"
+
+  # Boot configuration template
+  - path: /boot/config.txt.template
+    content: |
+      # Raspberry Pi Configuration
+      # Generated by cloud-init
+      
+      # Enable I2C
+      dtparam=i2c_arm=on
+      dtparam=i2c1=on
+      
+      # Enable SPI
+      dtparam=spi=on
+      
+      # Enable UART
+      enable_uart=1
+      
+      # Disable Bluetooth (saves power)
+      dtoverlay=disable-bt
+      
+      # GPU memory split
+      gpu_mem=16
+      
+      # Overclock settings (Pi 4)
+      #over_voltage=6
+      #arm_freq=2000
+      #gpu_freq=750
+      
+      # Overclock settings (Pi 5)
+      #over_voltage=4
+      #arm_freq=2400
+      #gpu_freq=800
+
+# Run commands
+runcmd:
+  # Enable I2C and SPI
+  - raspi-config nonint do_i2c 0
+  - raspi-config nonint do_spi 0
+  
+  # Set up swap (minimal)
+  - fallocate -l 1G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  
+  # Configure systemd for faster boot
+  - systemctl disable apt-daily.service
+  - systemctl disable apt-daily.timer
+  - systemctl disable apt-daily-upgrade.timer
+  - systemctl disable apt-daily-upgrade.service
+  
+  # Enable services
+  - systemctl enable robot-configure.service
+  - systemctl enable ssh
+  - systemctl enable avahi-daemon
+  
+  # Trigger configuration on first boot
+  - /usr/local/bin/configure-robot.sh || true
+
+# Power state
+power_state:
+  mode: reboot
+  timeout: 30
+  condition: True
+
+# Final message
+final_message: |
+  =====================================
+  Robot factory installation complete!
+  
+  The system will reboot in 30 seconds.
+  After reboot, the robot will be available at:
+  - Hostname: $(hostname).local
+  - SSH: ssh robot@$(hostname).local
+  
+  Robot type will be auto-detected on first boot.
+  =====================================

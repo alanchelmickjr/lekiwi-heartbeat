@@ -1,0 +1,88 @@
+# Configuration for robust discovery and state management system
+
+# PostgreSQL Configuration
+database:
+  host: ${DB_HOST:-localhost}
+  port: ${DB_PORT:-5432}
+  database: ${DB_NAME:-lekiwi_robots}
+  user: ${DB_USER:-lekiwi}
+  password: ${DB_PASSWORD:-lekiwi_secure_pass}
+  min_connections: 10
+  max_connections: 50
+  command_timeout: 10
+  statement_timeout: 30
+
+# Redis Cache Configuration  
+redis:
+  host: ${REDIS_HOST:-localhost}
+  port: ${REDIS_PORT:-6379}
+  db: ${REDIS_DB:-0}
+  password: ${REDIS_PASSWORD:-}
+  max_connections: 50
+  socket_timeout: 5
+  socket_connect_timeout: 5
+  retry_on_timeout: true
+
+# Discovery Service Configuration
+discovery:
+  network: ${DISCOVERY_NETWORK:-192.168.88.0/24}
+  max_workers: 50
+  parallel_scans: 100
+  timeout: 2.0
+  ws_port: 8765
+  ssh_port: 22
+  continuous_discovery: true
+  discovery_interval: 30  # seconds
+
+# State Management Configuration
+state_management:
+  event_retention_days: 30
+  cache_ttl:
+    dynamic_data: 300  # 5 minutes
+    static_data: 3600  # 1 hour
+    discovery_results: 60  # 1 minute
+    metrics: 86400  # 24 hours
+
+# Circuit Breaker Configuration
+circuit_breaker:
+  failure_threshold: 5
+  success_threshold: 3
+  timeout: 30  # seconds
+  half_open_timeout: 60  # seconds
+  reset_timeout: 300  # seconds
+
+# Metrics Configuration
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+  collection_interval: 10  # seconds
+
+# Logging Configuration
+logging:
+  level: ${LOG_LEVEL:-INFO}
+  format: json
+  file: ${LOG_FILE:-/var/log/lekiwi/robot_state.log}
+  max_size: 100  # MB
+  max_backups: 10
+  max_age: 30  # days
+
+# Performance Tuning
+performance:
+  max_concurrent_operations: 100
+  batch_size: 50
+  connection_pool_size: 20
+  query_timeout: 10
+  command_timeout: 30
+
+# Feature Flags
+features:
+  enable_websocket_discovery: true
+  enable_udp_broadcast: true
+  enable_arp_cache_check: true
+  enable_ssh_fallback: true
+  enable_event_sourcing: true
+  enable_cqrs: true
+  enable_circuit_breaker: true
+  enable_metrics: true
+  enable_cache: true

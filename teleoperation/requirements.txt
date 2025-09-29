@@ -1,0 +1,39 @@
+# Teleoperation Monitoring System Requirements
+
+# Core async and networking
+aiohttp>=3.8.0
+asyncio-mqtt>=0.16.0
+
+# System monitoring
+psutil>=5.9.0
+
+# ZeroMQ for message monitoring  
+pyzmq>=24.0.0
+
+# Numerical operations
+numpy>=1.21.0
+
+# Input device monitoring (Linux only)
+evdev>=1.6.0; sys_platform == 'linux'
+
+# WebSocket support (included in aiohttp)
+# aiohttp includes WebSocket server/client support
+
+# Optional: For enhanced performance monitoring
+# prometheus-client>=0.16.0  # For Prometheus metrics export
+# aioprometheus>=22.5.0      # Async Prometheus client
+
+# Optional: For advanced network monitoring
+# scapy>=2.5.0               # Packet analysis
+# python-iptables>=1.0.0     # Firewall rule inspection
+
+# Testing dependencies
+pytest>=7.2.0
+pytest-asyncio>=0.20.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# Development dependencies
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0

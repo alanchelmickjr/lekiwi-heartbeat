@@ -1,0 +1,227 @@
+version: '3.8'
+
+services:
+  discovery-service:
+    image: lekiwi/discovery-service:latest
+    container_name: discovery-service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=lekiwi_heartbeat
+      - POSTGRES_USER=lekiwi_admin
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=info
+      - DISCOVERY_MODE=event_driven
+    networks:
+      - lekiwi-net
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./config:/app/config:ro
+      - discovery-logs:/app/logs
+
+  state-manager:
+    image: lekiwi/state-manager:latest
+    container_name: state-manager
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=lekiwi_heartbeat
+      - POSTGRES_USER=lekiwi_admin
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CACHE_TTL=3600
+      - SYNC_INTERVAL=10
+    networks:
+      - lekiwi-net
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ./config:/app/config:ro
+      - state-logs:/app/logs
+
+  websocket-monitor:
+    image: lekiwi/websocket-monitor:latest
+    container_name: websocket-monitor
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+      - "9001:9001"  # WebSocket port
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - WS_PORT=9001
+      - HEARTBEAT_INTERVAL=5
+      - CONNECTION_TIMEOUT=30
+      - MAX_CONNECTIONS=10000
+    networks:
+      - lekiwi-net
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ws-logs:/app/logs
+
+  teleoperation-service:
+    image: lekiwi/teleoperation-service:latest
+    container_name: teleoperation-service
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=lekiwi_heartbeat
+      - POSTGRES_USER=lekiwi_admin
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+      - DETECTOR_MODE=optimized
+      - RING_BUFFER_SIZE=1048576
+      - USE_SHARED_MEMORY=true
+    networks:
+      - lekiwi-net
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - teleoperation-logs:/app/logs
+      - /dev/shm:/dev/shm  # For shared memory optimization
+
+  postgres:
+    image: postgres:14-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=lekiwi_heartbeat
+      - POSTGRES_USER=lekiwi_admin
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_MAX_CONNECTIONS=200
+      - POSTGRES_SHARED_BUFFERS=256MB
+    ports:
+      - "5432:5432"
+    networks:
+      - lekiwi-net
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lekiwi_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    networks:
+      - lekiwi-net
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-lb
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - lekiwi-net
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - discovery-service
+      - state-manager
+      - websocket-monitor
+      - teleoperation-service
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    networks:
+      - lekiwi-net
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    networks:
+      - lekiwi-net
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_INSTALL_PLUGINS=redis-datasource
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+
+networks:
+  lekiwi-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres-data:
+  redis-data:
+  discovery-logs:
+  state-logs:
+  ws-logs:
+  teleoperation-logs:
+  nginx-logs:
+  prometheus-data:
+  grafana-data:

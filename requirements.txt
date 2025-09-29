@@ -1,0 +1,50 @@
+# Core dependencies for robust discovery and state management system
+
+# Database
+asyncpg>=0.27.0
+psycopg2-binary>=2.9.9
+
+# Redis cache
+redis>=4.5.1
+redis[hiredis]>=4.5.1
+
+# Async support
+aiohttp>=3.9.0
+aiofiles>=23.1.0
+asyncio>=3.4.3
+
+# WebSocket support
+websockets>=11.0.3
+aiohttp[speedups]>=3.9.0
+
+# Event sourcing and CQRS
+pydantic>=2.0.0
+
+# Circuit breaker and retry logic
+backoff>=2.2.1
+tenacity>=8.2.2
+
+# Metrics and monitoring
+prometheus-client>=0.16.0
+structlog>=23.1.0
+
+# FastAPI integration (existing)
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+
+# SSH and network discovery
+paramiko>=3.3.1
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.1
+pytest-cov>=4.1.0
+pytest-mock>=3.11.1
+
+# Development tools
+black>=23.7.0
+mypy>=1.5.0
+pylint>=2.17.5
+
+# Existing dependencies
+pyzmq>=25.1.0

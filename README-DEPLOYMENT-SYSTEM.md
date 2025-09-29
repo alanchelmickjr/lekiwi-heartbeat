@@ -25,26 +25,39 @@ A complete deployment system that brings modern CI/CD practices to robotics. Jus
 ### 1. Start the Deployment System
 
 ```bash
-# Make scripts executable
+# Make the startup script executable
 chmod +x start-deployment-system.sh
 
-# Start the server with web GUI
+# Start in PRODUCTION mode (minimal output, automatic cleanup)
 ./start-deployment-system.sh
+
+# Start in DEVELOPMENT mode (verbose logging, interactive prompts)
+./start-deployment-system.sh --dev
+
+# View help and available options
+./start-deployment-system.sh --help
 ```
 
-Open http://localhost:8000 in your browser
+The server automatically:
+- Discovers all robots on the network (192.168.88.x subnet)
+- Installs required Python dependencies (fastapi, uvicorn, aiohttp, pydantic)
+- Cleans up any hung processes from previous runs
+- Creates local deployment directories in `~/.lekiwi-deploy/`
+- Starts the web dashboard at http://localhost:8000
 
 ### 2. Check Robot Status
 
-From the web interface or command line:
+The system automatically discovers robots on startup and creates `/tmp/lekiwi_fleet.json`. You can:
 
 ```bash
-# Check individual robot
+# Check individual robot using the deployment master script
 python3 deployment-master/lekiwi-master-deploy.py 192.168.88.21 --action check
 
-# Check all known robots
-python3 deployment-master/lekiwi-master-deploy.py 192.168.88.57 --action check
-python3 deployment-master/lekiwi-master-deploy.py 192.168.88.64 --action check
+# View discovered robots from the fleet configuration
+cat /tmp/lekiwi_fleet.json | python3 -m json.tool
+
+# Check robot types detected
+cat /tmp/robot_types.json | python3 -m json.tool
 ```
 
 ### 3. Fix Robot Configuration
@@ -74,32 +87,68 @@ curl -X POST http://localhost:8000/api/deploy \
 
 ```
 lekiwi-heartbeat/
-├── deployment-server/          # Main deployment server
-│   ├── server.py              # FastAPI backend with all APIs
-│   └── static/
-│       └── index.html         # Web dashboard (Vercel-style)
+├── start-deployment-system.sh     # Main startup script (USE THIS!)
 │
-├── deployment-master/          # Robot deployment scripts
+├── deployment-server/             # Main deployment server
+│   ├── server.py                 # FastAPI backend with all APIs
+│   ├── smart_discover.py         # Auto-discovers robots on network
+│   ├── add_discovered_robots.py  # Converts discoveries to fleet config
+│   ├── detect_robot_type.py      # Identifies robot hardware types
+│   ├── comparison_engine.py      # Compares robot configurations
+│   ├── robot_versioning.py       # Manages robot versions
+│   └── static/
+│       └── index.html            # Web dashboard (Vercel-style)
+│
+├── deployment-master/             # Robot deployment scripts
 │   ├── lekiwi-master-deploy.py  # Python deployment tool
 │   └── lekiwi-robot-deploy.sh   # Bash alternative
 │
-├── deployment-agent/           # Robot-side agent
-│   └── agent.py               # Runs on each robot
+├── deployment-agent/              # Robot-side agent
+│   └── agent.py                  # Runs on each robot
 │
-├── deployment-gun/             # P2P deployment (alternative)
-│   ├── gun-deployment-server.py
-│   └── gun-robot-agent.py
-│
-└── start-deployment-system.sh  # Startup script
+└── ~/.lekiwi-deploy/              # Local deployment directory (created by script)
+    ├── deployments/               # Deployment packages
+    ├── packages/                  # Built packages
+    ├── repos/                     # Git repositories
+    └── logs/                      # Log files
+```
+
+### Temporary Files Created
+
+The system creates these files for robot discovery and management:
+
+```
+/tmp/
+├── lekiwi_fleet.json            # Discovered robot fleet configuration
+├── robot_types.json             # Detected robot hardware types
+├── discovery_results.json       # Raw discovery results
+├── smart_discovered.txt         # Smart discovery output
+├── discovered_robots.txt        # Simple robot list
+└── robot_comparisons/           # Robot comparison data (cleaned on startup)
 ```
 
 ## 🤖 Known Robots
 
-| IP Address | Robot ID | Status | Notes |
-|------------|----------|--------|-------|
-| 192.168.88.21 | lekiwi_67222140 | ✅ Working | Reference robot |
-| 192.168.88.57 | lekiwi_67223052 | ✅ Fixed | Teleop corrected |
-| 192.168.88.64 | Unknown | ⚠️ Needs Check | May need teleop fix |
+The system automatically discovers robots on startup. Default known robots:
+
+| IP Address | Robot Type | Description | Status |
+|------------|------------|-------------|--------|
+| 192.168.88.21 | lekiwi5 | Standard robot | Offline (default) |
+| 192.168.88.57 | xlerobot1 | Bimanual/3-cam robot | Auto-detected |
+| 192.168.88.58 | lekiwi5 | Standard robot | Auto-detected |
+| 192.168.88.62 | lekiwi5 | Standard robot | Auto-detected |
+| 192.168.88.64 | lekiwi5 | Standard robot | Auto-detected |
+
+To refresh robot discovery, remove the fleet file and restart:
+```bash
+rm /tmp/lekiwi_fleet.json
+./start-deployment-system.sh
+```
+
+To clean ALL discovery files and start fresh:
+```bash
+./start-deployment-system.sh --clean-discovery
+```
 
 ## 🔧 Robot Configuration
 
@@ -180,12 +229,18 @@ The web dashboard provides:
 
 ### Server Management
 ```bash
-# Start deployment system
+# Start deployment system (production mode - minimal output)
 ./start-deployment-system.sh
 
-# Manual server start
+# Start in development mode (verbose output, auto-reload)
+./start-deployment-system.sh --dev
+
+# Clean discovery files and restart
+./start-deployment-system.sh --clean-discovery
+
+# Manual server start (if needed)
 cd deployment-server
-python3 -m uvicorn server:app --reload
+python3 -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload --log-level info
 
 # Check server health
 curl http://localhost:8000/health
@@ -253,15 +308,27 @@ curl http://localhost:8000/api/deployments
 ## 🆘 Troubleshooting
 
 ### Server Won't Start
+
+The startup script automatically handles this, but if you need manual control:
+
 ```bash
-# Check if port 8000 is in use
+# The script automatically kills processes on port 8000
+# But if you need to do it manually:
+lsof -ti:8000 | xargs kill -9
+
+# Alternative using fuser
+fuser -k 8000/tcp
+
+# Check what's using the port
 lsof -i:8000
 
-# Kill existing process
-kill $(lsof -t -i:8000)
+# Check Python dependencies (auto-installed by script)
+pip3 list | grep -E "fastapi|uvicorn|aiohttp|pydantic"
 
-# Check Python dependencies
-pip3 list | grep fastapi
+# The script also cleans up hung processes:
+pkill -9 -f "uvicorn server:app"
+pkill -9 -f "python.*server.py"
+pkill -9 -f "python.*smart_discover.py"
 ```
 
 ### Robot Connection Issues

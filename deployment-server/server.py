@@ -52,6 +52,14 @@ except ImportError as e:
     print(f"⚠️ Robot versioning module not available: {e}")
     versioning = None
 
+# Import the new parallel discovery system
+try:
+    from server_discovery import discovery_engine, DiscoveryStage
+    print("✅ Parallel discovery system loaded")
+except ImportError as e:
+    print(f"⚠️ Parallel discovery module not available: {e}")
+    discovery_engine = None
+
 # Configuration
 CONFIG = {
     "server_port": int(os.getenv("DEPLOY_PORT", "8000")),
@@ -327,8 +335,35 @@ async def root():
 
 @app.get("/api/fleet")
 async def get_fleet():
-    """Get the discovered fleet configuration"""
+    """Get the discovered fleet configuration with staged status if available"""
     fleet_file = Path("/tmp/lekiwi_fleet.json")
+    
+    # If we have the parallel discovery engine and it has data, use that
+    if discovery_engine and discovery_engine.robots:
+        results = discovery_engine._get_discovery_results()
+        fleet_data = {
+            "robots": [],
+            "total": 0,
+            "discovered_at": datetime.now().timestamp(),
+            "discovery_method": "parallel_staged",
+            "stages_enabled": True
+        }
+        
+        for ip, robot_data in results["robots"].items():
+            if robot_data["is_valid"]:
+                fleet_data["robots"].append({
+                    "ip": ip,
+                    "hostname": robot_data["hostname"] or f"robot_{ip.split('.')[-1]}",
+                    "type": robot_data["type"],
+                    "stages": robot_data["stages"],
+                    "teleop_host": robot_data["stages"].get(DiscoveryStage.TELEOP_HOST.value, {}).get("status") == "success",
+                    "teleop_operation": robot_data["stages"].get(DiscoveryStage.TELEOP_OPERATION.value, {}).get("status") == "active"
+                })
+        
+        fleet_data["total"] = len(fleet_data["robots"])
+        return fleet_data
+    
+    # Fallback to file-based fleet data
     if fleet_file.exists():
         with open(fleet_file, 'r') as f:
             return json.load(f)
@@ -337,6 +372,35 @@ async def get_fleet():
         print("🔍 Fleet configuration not found. Running robot discovery...")
         
         try:
+            # Try parallel discovery first
+            if discovery_engine:
+                results = await discovery_engine.discover_network()
+                fleet_data = {
+                    "robots": [],
+                    "total": 0,
+                    "discovered_at": datetime.now().timestamp(),
+                    "discovery_method": "parallel_staged",
+                    "stages_enabled": True
+                }
+                
+                for ip, robot_data in results["robots"].items():
+                    if robot_data["is_valid"]:
+                        fleet_data["robots"].append({
+                            "ip": ip,
+                            "hostname": robot_data["hostname"] or f"robot_{ip.split('.')[-1]}",
+                            "type": robot_data["type"],
+                            "stages": robot_data["stages"]
+                        })
+                
+                fleet_data["total"] = len(fleet_data["robots"])
+                
+                # Save to file
+                with open(fleet_file, 'w') as f:
+                    json.dump(fleet_data, f, indent=2)
+                
+                return fleet_data
+            
+            # Fallback to legacy discovery
             # Run smart discovery to find all robots
             # Increased timeout to allow for proper Raspberry Pi scanning
             discovery_result = subprocess.run(
@@ -660,6 +724,64 @@ async def notify_robots(deployment_info: Dict):
     # In a real implementation, this would send push notifications to robots
     # For now, robots poll for updates
 
+# Get robot staged status
+@app.get("/api/robot/{robot_ip}/stages")
+async def get_robot_stages(robot_ip: str):
+    """Get detailed staged discovery status for a specific robot"""
+    if not discovery_engine:
+        return JSONResponse(content={
+            "error": "Staged discovery not available",
+            "robot_ip": robot_ip
+        }, status_code=501)
+    
+    try:
+        # Update single robot status through all stages
+        robot_data = await discovery_engine.update_single_robot(robot_ip)
+        
+        return JSONResponse(content={
+            "success": True,
+            "robot_ip": robot_ip,
+            "hostname": robot_data["hostname"],
+            "type": robot_data["type"],
+            "is_valid": robot_data["is_valid"],
+            "stages": robot_data["stages"],
+            "summary": {
+                "awake": robot_data["stages"][DiscoveryStage.AWAKE.value]["status"] == "success",
+                "identified": robot_data["stages"][DiscoveryStage.TYPE.value]["status"] == "success",
+                "software_ready": robot_data["stages"][DiscoveryStage.SOFTWARE.value]["status"] == "success",
+                "cameras_ready": robot_data["stages"][DiscoveryStage.VIDEO.value]["status"] == "success",
+                "teleop_host": robot_data["stages"][DiscoveryStage.TELEOP_HOST.value]["status"] == "success",
+                "teleop_operated": robot_data["stages"][DiscoveryStage.TELEOP_OPERATION.value]["status"] == "active"
+            },
+            "last_updated": robot_data["last_updated"]
+        })
+        
+    except Exception as e:
+        print(f"Error getting stages for {robot_ip}: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": str(e),
+            "robot_ip": robot_ip
+        }, status_code=500)
+
+# Get discovery status
+@app.get("/api/discovery/status")
+async def get_discovery_status():
+    """Get current discovery engine status"""
+    if not discovery_engine:
+        return {
+            "available": False,
+            "message": "Parallel discovery not available"
+        }
+    
+    return {
+        "available": True,
+        "running": discovery_engine.discovery_running,
+        "robots_tracked": len(discovery_engine.robots),
+        "valid_robots": sum(1 for r in discovery_engine.robots.values() if r.is_valid_robot),
+        "blank_pis": sum(1 for r in discovery_engine.robots.values() if r.robot_type == 'blank_pi')
+    }
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
@@ -668,7 +790,11 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "deployments": len(deployments_db),
-        "robots": len(robot_status_db)
+        "robots": len(robot_status_db),
+        "discovery": {
+            "parallel_available": discovery_engine is not None,
+            "robots_tracked": len(discovery_engine.robots) if discovery_engine else 0
+        }
     }
 
 # Execute command endpoint for robot management
@@ -1189,12 +1315,166 @@ async def calculate_version_delta(request: Request):
         print(f"Delta calculation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# API endpoint to manually trigger discovery
+# API endpoint to manually trigger discovery - FIXED PARALLEL VERSION
 @app.post("/api/discover")
 async def trigger_discovery():
-    """Manually trigger robot discovery"""
+    """Manually trigger robot discovery with TRUE parallel staged execution"""
+    if not discovery_engine:
+        # Fallback to old discovery if new module not available
+        print("⚠️ Parallel discovery not available, using legacy discovery")
+        return await trigger_legacy_discovery()
+    
     try:
-        print("🔍 Manually triggering robot discovery...")
+        print("🚀 Starting TRUE PARALLEL staged robot discovery...")
+        
+        # Run parallel discovery - THIS IS NOW ACTUALLY PARALLEL!
+        results = await discovery_engine.discover_network(
+            network="192.168.88",
+            start=1,
+            end=254
+        )
+        
+        # Convert results to fleet format with proper stage separation
+        fleet_data = {
+            "robots": [],
+            "total": 0,
+            "discovered_at": datetime.now().timestamp(),
+            "discovery_method": "parallel_staged",
+            "stages_enabled": True,
+            "discovery_time": results.get("discovery_time", 0)
+        }
+        
+        for ip, robot_data in results["robots"].items():
+            # Only include valid robots (not blank Pis)
+            if robot_data["is_valid"]:
+                # Properly separate HOST vs OPERATION status
+                teleop_host_status = robot_data["stages"].get(DiscoveryStage.TELEOP_HOST.value, {})
+                teleop_operation_status = robot_data["stages"].get(DiscoveryStage.TELEOP_OPERATION.value, {})
+                
+                fleet_data["robots"].append({
+                    "ip": ip,
+                    "hostname": robot_data["hostname"] or f"robot_{ip.split('.')[-1]}",
+                    "type": robot_data["type"],
+                    "stages": robot_data["stages"],
+                    # Separate HOST (service ready) vs OPERATION (being controlled)
+                    "teleop_host": teleop_host_status.get("status") == "success",
+                    "teleop_operation": teleop_operation_status.get("status") == "active",
+                    # Add detailed status for UI
+                    "teleop_details": {
+                        "host_ready": teleop_host_status.get("status") == "success",
+                        "host_message": teleop_host_status.get("message", "Not checked"),
+                        "operated": teleop_operation_status.get("status") == "active",
+                        "operation_message": teleop_operation_status.get("message", "Not checked"),
+                        "active_connections": teleop_operation_status.get("details", {}).get("active_connections", 0)
+                    }
+                })
+        
+        fleet_data["total"] = len(fleet_data["robots"])
+        
+        # Save to file for compatibility
+        fleet_file = Path("/tmp/lekiwi_fleet.json")
+        with open(fleet_file, 'w') as f:
+            json.dump(fleet_data, f, indent=2)
+        
+        # Also include blank Pis in response for transparency
+        blank_pi_list = []
+        for ip, robot_data in results["robots"].items():
+            if robot_data["type"] == "blank_pi":
+                blank_pi_list.append({
+                    "ip": ip,
+                    "hostname": robot_data.get("hostname", "unknown")
+                })
+        
+        print(f"✅ Parallel discovery complete in <5s: {results['valid_robots']} valid robots, {results['blank_pis']} blank Pis filtered")
+        
+        return {
+            "status": "success",
+            "message": f"Discovered {results['valid_robots']} valid robots ({results['blank_pis']} blank Pis filtered)",
+            "fleet": fleet_data,
+            "blank_pis": blank_pi_list,
+            "summary": {
+                "total_scanned": results["total_scanned"],
+                "valid_robots": results["valid_robots"],
+                "blank_pis": results["blank_pis"],
+                "discovery_time": f"{results.get('discovery_time', 0):.1f}s"
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Parallel discovery error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# NEW: Staged discovery endpoint for progressive updates
+@app.get("/api/staged-discovery")
+async def get_staged_discovery_status():
+    """Get current staged discovery progress with live updates"""
+    if not discovery_engine:
+        return JSONResponse(content={
+            "available": False,
+            "message": "Staged discovery not available"
+        }, status_code=501)
+    
+    # Get current state of all robots with their stages
+    robots_with_stages = {}
+    
+    for ip, robot in discovery_engine.robots.items():
+        robots_with_stages[ip] = {
+            "ip": robot.ip,
+            "hostname": robot.hostname,
+            "type": robot.robot_type,
+            "is_valid": robot.is_valid_robot,
+            "stages": robot.stages,
+            "last_updated": robot.last_updated,
+            # Add summary for easy UI consumption
+            "stage_summary": {
+                "completed": sum(1 for s in robot.stages.values() if s["status"] in ["success", "active"]),
+                "total": len(robot.stages),
+                "current_stage": next((k for k, v in robot.stages.items() if v["status"] == "pending"), None),
+                "teleop_host_ready": robot.stages.get(DiscoveryStage.TELEOP_HOST.value, {}).get("status") == "success",
+                "teleop_operated": robot.stages.get(DiscoveryStage.TELEOP_OPERATION.value, {}).get("status") == "active"
+            }
+        }
+    
+    return {
+        "discovery_running": discovery_engine.discovery_running,
+        "robots": robots_with_stages,
+        "stats": {
+            "total_robots": len(robots_with_stages),
+            "valid_robots": sum(1 for r in robots_with_stages.values() if r["is_valid"]),
+            "blank_pis": sum(1 for r in robots_with_stages.values() if r["type"] == "blank_pi"),
+            "with_teleop_host": sum(1 for r in robots_with_stages.values() if r["stage_summary"]["teleop_host_ready"]),
+            "being_operated": sum(1 for r in robots_with_stages.values() if r["stage_summary"]["teleop_operated"])
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/api/staged-discovery/start")
+async def start_staged_discovery(request: Request):
+    """Start a new staged discovery with optional network range"""
+    if not discovery_engine:
+        return JSONResponse(content={
+            "error": "Staged discovery not available"
+        }, status_code=501)
+    
+    data = await request.json()
+    network = data.get("network", "192.168.88")
+    start = data.get("start", 1)
+    end = data.get("end", 254)
+    
+    # Run discovery in background
+    asyncio.create_task(discovery_engine.discover_network(network, start, end))
+    
+    return {
+        "status": "started",
+        "message": f"Discovery started for {network}.{start}-{end}",
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Legacy discovery fallback
+async def trigger_legacy_discovery():
+    """Legacy discovery method (fallback)"""
+    try:
+        print("🔍 Using legacy discovery...")
         
         # Clean up old discovery files
         for file in ["/tmp/discovery_results.json", "/tmp/smart_discovered.txt",
@@ -1370,7 +1650,48 @@ async def get_robot_type(robot_ip: str):
 
 @app.get("/api/robot/{robot_ip}/teleoperation-status")
 async def get_teleoperation_status(robot_ip: str):
-    """Check if robot is being teleoperated"""
+    """Check robot teleoperation with PROPER HOST vs OPERATION distinction"""
+    
+    # If we have parallel discovery engine, use its detailed check
+    if discovery_engine:
+        # Update this specific robot's status
+        robot_status = await discovery_engine.update_single_robot(robot_ip)
+        
+        host_status = robot_status["stages"].get(DiscoveryStage.TELEOP_HOST.value, {})
+        operation_status = robot_status["stages"].get(DiscoveryStage.TELEOP_OPERATION.value, {})
+        
+        # Extract detailed information
+        host_details = host_status.get("details", {})
+        operation_details = operation_status.get("details", {})
+        
+        return JSONResponse(content={
+            "success": True,
+            # Clear separation of HOST vs OPERATION
+            "teleop_host_ready": host_status.get("status") == "success",
+            "teleop_operated": operation_status.get("status") == "active",
+            "teleoperated": operation_status.get("status") == "active",  # Backward compatibility
+            # Detailed status for UI
+            "host_status": {
+                "ready": host_status.get("status") == "success",
+                "message": host_status.get("message", "Not checked"),
+                "services": {
+                    "teleop": host_details.get("teleop_service", False),
+                    "lekiwi": host_details.get("lekiwi_service", False),
+                    "port_5558": host_details.get("port_5558", False)
+                }
+            },
+            "operation_status": {
+                "active": operation_status.get("status") == "active",
+                "message": operation_status.get("message", "Not checked"),
+                "connections": operation_details.get("active_connections", 0),
+                "cpu_usage": operation_details.get("cpu_usage", 0),
+                "recent_activity": operation_details.get("recent_activity", False)
+            },
+            "checked_at": datetime.now().isoformat(),
+            "robot_ip": robot_ip
+        })
+    
+    # Fallback to legacy check
     try:
         # Method 1: Check for teleoperate.py process
         process_check_cmd = f"sshpass -p lekiwi ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 lekiwi@{robot_ip} 'pgrep -f teleoperate.py || echo none'"

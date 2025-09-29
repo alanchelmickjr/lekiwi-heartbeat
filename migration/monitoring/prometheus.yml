@@ -1,0 +1,111 @@
+# Prometheus Configuration for Migration Monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'lekiwi-migration'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+# Load rules
+rule_files:
+  - "alerts/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Legacy System Metrics
+  - job_name: 'legacy-system'
+    static_configs:
+      - targets: ['localhost:8000']
+        labels:
+          system: 'legacy'
+          service: 'monolith'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # New System - Discovery Service
+  - job_name: 'discovery-service'
+    static_configs:
+      - targets: ['localhost:8001']
+        labels:
+          system: 'new'
+          service: 'discovery'
+    metrics_path: '/metrics'
+
+  # New System - State Manager
+  - job_name: 'state-manager'
+    static_configs:
+      - targets: ['localhost:8002']
+        labels:
+          system: 'new'
+          service: 'state-manager'
+    metrics_path: '/metrics'
+
+  # New System - WebSocket Monitor
+  - job_name: 'websocket-monitor'
+    static_configs:
+      - targets: ['localhost:8003']
+        labels:
+          system: 'new'
+          service: 'websocket-monitor'
+    metrics_path: '/metrics'
+
+  # New System - Teleoperation Service
+  - job_name: 'teleoperation-service'
+    static_configs:
+      - targets: ['localhost:8004']
+        labels:
+          system: 'new'
+          service: 'teleoperation'
+    metrics_path: '/metrics'
+
+  # PostgreSQL Exporter
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['localhost:9187']
+        labels:
+          system: 'new'
+          service: 'database'
+
+  # Redis Exporter
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['localhost:9121']
+        labels:
+          system: 'new'
+          service: 'cache'
+
+  # NGINX Exporter
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['localhost:9113']
+        labels:
+          service: 'loadbalancer'
+
+  # Node Exporter (System Metrics)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          service: 'system'
+
+  # Docker Metrics
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['localhost:9323']
+        labels:
+          service: 'docker'
+
+  # Migration Metrics (Pushgateway)
+  - job_name: 'migration-metrics'
+    honor_labels: true
+    static_configs:
+      - targets: ['localhost:9091']
+        labels:
+          service: 'migration'

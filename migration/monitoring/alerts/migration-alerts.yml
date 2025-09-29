@@ -1,0 +1,244 @@
+# Migration Alert Rules for Prometheus
+groups:
+  - name: migration_critical
+    interval: 30s
+    rules:
+      # Critical Error Rate Alert
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5..",system="new"}[5m]))
+            /
+            sum(rate(http_requests_total{system="new"}[5m]))
+          ) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          action: rollback
+          system: new
+        annotations:
+          summary: "High error rate detected in new system"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 1%)"
+          runbook_url: "/migration/runbooks/operator-runbook.md#high-error-rate"
+
+      # System Availability Alert
+      - alert: ServiceDown
+        expr: up{system="new"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          action: investigate
+        annotations:
+          summary: "Service {{ $labels.service }} is down"
+          description: "{{ $labels.service }} on {{ $labels.instance }} is not responding"
+
+      # Database Connection Pool Exhaustion
+      - alert: DatabaseConnectionExhausted
+        expr: |
+          (
+            pg_stat_database_numbackends{datname="lekiwi_heartbeat"}
+            /
+            pg_settings_max_connections
+          ) > 0.9
+        for: 2m
+        labels:
+          severity: critical
+          action: scale
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: "Connection usage at {{ $value | humanizePercentage }}"
+
+  - name: migration_warning
+    interval: 30s
+    rules:
+      # High Latency Warning
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99, 
+            sum(rate(http_request_duration_seconds_bucket{system="new"}[5m])) 
+            by (le, service)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          system: new
+        annotations:
+          summary: "High P99 latency in {{ $labels.service }}"
+          description: "P99 latency is {{ $value | humanizeDuration }} (threshold: 100ms)"
+
+      # Redis Memory Warning
+      - alert: RedisMemoryHigh
+        expr: |
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          action: cleanup
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory at {{ $value | humanizePercentage }} of max"
+
+      # Data Sync Lag
+      - alert: DataSyncLag
+        expr: |
+          time() - migration_last_sync_timestamp > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data synchronization lagging"
+          description: "No sync for {{ $value | humanizeDuration }}"
+
+  - name: migration_comparison
+    interval: 1m
+    rules:
+      # Response Discrepancy Alert
+      - alert: ResponseDiscrepancy
+        expr: |
+          abs(
+            sum(rate(http_requests_total{system="legacy"}[5m]))
+            -
+            sum(rate(http_requests_total{system="new"}[5m]))
+          ) / sum(rate(http_requests_total{system="legacy"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Response count discrepancy between systems"
+          description: "Difference of {{ $value | humanizePercentage }} detected"
+
+      # Robot Count Mismatch
+      - alert: RobotCountMismatch
+        expr: |
+          abs(
+            count(robots_total{system="legacy"})
+            -
+            count(robots_total{system="new"})
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          action: reconcile
+        annotations:
+          summary: "Robot count mismatch between systems"
+          description: "Difference of {{ $value }} robots detected"
+
+      # Teleoperation Status Mismatch
+      - alert: TeleoperationStatusMismatch
+        expr: |
+          sum(teleoperation_sessions_active{system="new"}) 
+          != 
+          sum(teleoperation_sessions_active{system="legacy"})
+        for: 5m
+        labels:
+          severity: critical
+          action: investigate
+        annotations:
+          summary: "Teleoperation session count mismatch"
+          description: "Legacy: {{ $labels.legacy_count }}, New: {{ $labels.new_count }}"
+
+  - name: migration_performance
+    interval: 30s
+    rules:
+      # CPU Usage Alert
+      - alert: HighCPUUsage
+        expr: |
+          (
+            100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+          ) > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage at {{ $value | humanize }}%"
+
+      # Memory Usage Alert
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+          ) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage at {{ $value | humanize }}%"
+
+      # Disk Space Alert
+      - alert: LowDiskSpace
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/"} 
+            / 
+            node_filesystem_size_bytes{mountpoint="/"}
+          ) * 100 < 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Only {{ $value | humanize }}% disk space remaining"
+
+  - name: migration_traffic
+    interval: 30s
+    rules:
+      # Traffic Split Validation
+      - alert: TrafficSplitMismatch
+        expr: |
+          abs(migration_traffic_split - migration_expected_split) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Traffic split not matching expected value"
+          description: "Expected {{ $labels.expected }}%, Actual {{ $value }}%"
+
+      # Sudden Traffic Drop
+      - alert: SuddenTrafficDrop
+        expr: |
+          (
+            sum(rate(http_requests_total[5m]))
+            /
+            sum(rate(http_requests_total[5m] offset 10m))
+          ) < 0.5
+        for: 2m
+        labels:
+          severity: critical
+          action: investigate
+        annotations:
+          summary: "Sudden drop in traffic"
+          description: "Traffic dropped by {{ $value | humanizePercentage }}"
+
+  - name: migration_rollback
+    interval: 30s
+    rules:
+      # Automatic Rollback Trigger
+      - alert: AutomaticRollbackRequired
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5..",system="new"}[2m]))
+            /
+            sum(rate(http_requests_total{system="new"}[2m]))
+          ) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          action: auto_rollback
+        annotations:
+          summary: "AUTOMATIC ROLLBACK TRIGGERED"
+          description: "Error rate at {{ $value | humanizePercentage }} - initiating rollback"
+          runbook_url: "/migration/scripts/universal_rollback.sh"
+
+      # Rollback Window Alert
+      - alert: RollbackWindowClosing
+        expr: |
+          (time() - migration_phase_start_timestamp) > 3600
+          and
+          migration_phase_validated == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rollback window closing for current phase"
+          description: "Phase running for {{ $value | humanizeDuration }} without validation"

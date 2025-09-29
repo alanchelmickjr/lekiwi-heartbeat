@@ -1008,10 +1008,15 @@
                                 <span id="scanning-status">Ready to scan</span>
                             </p>
                         </div>
-                        <button class="btn" id="discover-btn" onclick="discoverRobots()">
-                            <span id="scan-icon">🔍</span>
-                            <span id="scan-text">Discover Robots</span>
-                        </button>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button class="btn" id="discover-btn" onclick="discoverRobots()">
+                                <span id="scan-icon">🔍</span>
+                                <span id="scan-text">Discover Robots</span>
+                            </button>
+                            <button class="btn btn-ghost" onclick="updateDiscovery()" title="Update existing robots without clearing">
+                                🔄 Update Discovery
+                            </button>
+                        </div>
                     </div>
                     <div class="discovery-input">
                         <div class="input-group">
@@ -1146,15 +1151,33 @@
         const CAMERA_CACHE_TTL = 15000; // 15 seconds cache TTL
         const failedRequests = new Map(); // Track failed requests for backoff
         
+        // Continuous discovery state
+        let continuousDiscovery = false;
+        let continuousDiscoveryInterval = null;
+        const CONTINUOUS_DISCOVERY_INTERVAL = 30000; // 30 seconds between discoveries
+        
         // Staged collection state
         let currentStage = null;
         let stageProgress = { current: 0, total: 0 };
+        let discoveryInProgress = false;
+        let stagesSupported = true; // Default to true for new parallel system
+        
+        // Stage configuration
+        const STAGE_INFO = {
+            'awake': { icon: '📡', label: 'Network', color: '#4fc3f7' },
+            'type': { icon: '🤖', label: 'Type', color: '#667eea' },
+            'software': { icon: '💾', label: 'Software', color: '#66bb6a' },
+            'video': { icon: '📷', label: 'Cameras', color: '#ffa726' },
+            'teleop_host': { icon: '🎮', label: 'Host Ready', color: '#ab47bc' },
+            'teleop_operation': { icon: '🕹️', label: 'Operated', color: '#ef5350' }
+        };
         
         // Refresh rates
         const FULL_COLLECTION_INTERVAL = 60000; // 60 seconds for full staged collection
-        const INTER_ROBOT_DELAY = 100; // 100ms delay between robots
-        const INTER_STAGE_DELAY = 500; // 500ms delay between stages
-        const CAMERA_DELAY = 200; // 200ms delay for camera operations
+        const DISCOVERY_STATUS_INTERVAL = 1000; // 1 second for discovery status updates
+        const INTER_ROBOT_DELAY = 100; // 100ms between robot checks
+        const INTER_STAGE_DELAY = 500; // 500ms between stages
+        const CAMERA_DELAY = 200; // 200ms for camera operations
         
         // Intersection Observer for visibility tracking
         let visibilityObserver = null;
@@ -1292,18 +1315,36 @@
                     const fleetData = await response.json();
                     console.log('Loading fleet from discovery:', fleetData);
                     
-                    // Add discovered robots to our map
+                    // Add discovered robots to our map - MERGE don't replace
                     if (fleetData.robots) {
                         fleetData.robots.forEach(robot => {
-                            robots.set(robot.ip, {
-                                ip: robot.ip,
-                                id: robot.hostname || `checking...`,  // Will get actual device ID from check
-                                status: 'checking',
-                                version: 'checking...',
-                                deployments: [],
-                                services: {},
-                                type: robot.type || 'Raspberry Pi'
-                            });
+                            const existingRobot = robots.get(robot.ip);
+                            if (!existingRobot) {
+                                // Only add if not already tracked
+                                robots.set(robot.ip, {
+                                    ip: robot.ip,
+                                    id: robot.hostname || `checking...`,  // Will get actual device ID from check
+                                    status: 'checking',
+                                    version: 'checking...',
+                                    deployments: [],
+                                    services: {},
+                                    type: robot.type || 'Raspberry Pi',
+                                    stages: robot.stages || {},
+                                    teleop_host: robot.teleop_host || false,
+                                    teleop_operation: robot.teleop_operation || false
+                                });
+                            } else {
+                                // Update existing robot with any new info
+                                if (robot.hostname && (!existingRobot.id || existingRobot.id === 'checking...')) {
+                                    existingRobot.id = robot.hostname;
+                                }
+                                if (robot.type) {
+                                    existingRobot.type = robot.type;
+                                }
+                                if (robot.stages) {
+                                    existingRobot.stages = robot.stages;
+                                }
+                            }
                         });
                         
                         updateRobotGrid();
@@ -1383,6 +1424,10 @@
                     clearInterval(teleopCheckInterval);
                     teleopCheckInterval = null;
                 }
+                if (continuousDiscoveryInterval) {
+                    clearInterval(continuousDiscoveryInterval);
+                    continuousDiscoveryInterval = null;
+                }
             });
             
             // Stop checking when page is hidden (user navigates away)
@@ -1391,10 +1436,23 @@
                     checkingInProgress = false;
                     scanning = false;
                     currentStage = null;
+                    // Also pause continuous discovery
+                    if (continuousDiscoveryInterval) {
+                        clearInterval(continuousDiscoveryInterval);
+                        continuousDiscoveryInterval = null;
+                    }
                 } else {
                     // Resume checks when page becomes visible
                     if (robots.size > 0 && !scanning && !checkingInProgress) {
                         stagedDataCollection();
+                    }
+                    // Resume continuous discovery if it was enabled
+                    if (continuousDiscovery && !continuousDiscoveryInterval) {
+                        continuousDiscoveryInterval = setInterval(() => {
+                            if (!scanning && !checkingInProgress) {
+                                discoverRobots();
+                            }
+                        }, CONTINUOUS_DISCOVERY_INTERVAL);
                     }
                 }
             });
@@ -1410,10 +1468,10 @@
             fleet.get('status').put(fleetStatus);
         }
 
-        // Discover robots using the proper /api/discover endpoint with double-tap protection
+        // Discover robots using the proper /api/discover endpoint with parallel staged discovery
         async function discoverRobots() {
             // Double-tap protection - if already scanning, just return
-            if (scanning) {
+            if (scanning || discoveryInProgress) {
                 console.log('Discovery already in progress, ignoring duplicate click');
                 return;
             }
@@ -1425,121 +1483,111 @@
             discoverBtn.style.cursor = 'not-allowed';
             
             scanning = true;
+            discoveryInProgress = true;
             document.getElementById('scan-icon').textContent = '🔄';
             document.getElementById('scan-text').textContent = 'Discovering...';
-            document.getElementById('scanning-status').innerHTML = '<span class="loading-dots">Starting smart discovery</span>';
+            document.getElementById('scanning-status').innerHTML = '<span class="loading-dots">Starting parallel discovery</span>';
             
-            // Clear existing robots to show fresh discovery
-            robots.clear();
+            // DON'T clear existing robots - preserve state and update instead
+            // Mark existing robots as "checking" status while we re-discover
+            robots.forEach((robot, ip) => {
+                robot.status = 'checking';
+            });
             updateRobotGrid();
             
-            // Add visual feedback that discovery is starting
-            setTimeout(() => {
-                document.getElementById('scanning-status').textContent = 'Initializing network scan...';
-            }, 500);
-            
-            const range = document.getElementById('ip-range').value;
-            const [baseIP, endRange] = parseIPRange(range);
-            
-            if (!baseIP) {
-                alert('Invalid IP range');
-                scanning = false;
-                return;
-            }
-            
-            // Extract start and end IPs
-            const baseParts = baseIP.split('.');
-            const startIP = parseInt(baseParts[3]);
-            const endIP = parseInt(endRange) || 254;
-            
-            // Show scanning progress
-            const totalIPs = endIP - startIP + 1;
-            document.getElementById('scanning-status').innerHTML =
-                `<span class="loading-dots">Scanning ${totalIPs} IPs</span>`;
-            
             try {
-                // Use the proper /api/discover endpoint which runs discovery dynamically
-                console.log(`Starting discovery scan: ${startIP}-${endIP}`);
-                document.getElementById('scanning-status').textContent = `Scanning network (${totalIPs} IPs)...`;
-                
-                // Add a small delay to show the UI is responding
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                document.getElementById('scanning-status').innerHTML =
-                    `<span style="color: #4fc3f7;">🚀 Running smart discovery on network 192.168.88.0/24...</span>`;
-                
-                // Call the /api/discover endpoint which performs fresh discovery
+                // Call the new parallel discovery endpoint
                 const response = await fetch(`${API_URL}/api/discover`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})  // No parameters needed, it scans the full range
+                    body: JSON.stringify({})
                 });
                 
                 if (response.ok) {
                     const result = await response.json();
                     console.log('Discovery completed:', result);
                     
-                    // Play a subtle success sound/animation
+                    // We always have staged discovery with the new system
+                    stagesSupported = true;
+                    
+                    // Start monitoring discovery progress
+                    monitorDiscoveryProgress();
+                    
+                    // Play success animation
                     document.getElementById('scan-icon').textContent = '✅';
                     
                     // Parse the fleet data from the response
-                    let foundRobots = [];
-                    
                     if (result.status === 'success' && result.fleet && result.fleet.robots) {
-                        // Process the discovered robots from the fleet data
+                        const validRobots = result.summary?.valid_robots || result.fleet.robots.length;
+                        const blankPis = result.summary?.blank_pis || 0;
+                        
+                        // Show success message with detailed counts
+                        let statusMsg = `✅ Found ${validRobots} valid robot${validRobots !== 1 ? 's' : ''}`;
+                        if (blankPis > 0) {
+                            statusMsg += ` (filtered ${blankPis} blank Pi${blankPis !== 1 ? 's' : ''})`;
+                        }
+                        document.getElementById('scanning-status').innerHTML =
+                            `<span style="color: #4CAF50;">${statusMsg}</span>`;
+                        
+                        // Process discovered robots with staged info - MERGE with existing
                         result.fleet.robots.forEach(robot => {
-                            if (!robots.has(robot.ip)) {
-                                foundRobots.push({
+                            const existingRobot = robots.get(robot.ip);
+                            if (existingRobot) {
+                                // Update existing robot - preserve some state
+                                existingRobot.status = 'online';
+                                existingRobot.type = robot.type;
+                                existingRobot.stages = robot.stages || existingRobot.stages || {};
+                                existingRobot.teleop_host = robot.teleop_host || false;
+                                existingRobot.teleop_operation = robot.teleop_operation || false;
+                                // Keep existing ID if it's better than the new one
+                                if (!existingRobot.id || existingRobot.id === 'checking...' || existingRobot.id.startsWith('robot_')) {
+                                    existingRobot.id = robot.hostname || existingRobot.id;
+                                }
+                            } else {
+                                // New robot discovered
+                                robots.set(robot.ip, {
                                     ip: robot.ip,
-                                    hostname: robot.hostname || `lekiwi_${robot.ip.split('.').pop()}`,
-                                    type: robot.type === 'LEKIWI' ? 'confirmed' :
-                                          robot.type === 'XLEROBOT' ? 'confirmed' : 'raspberry_pi'
+                                    id: robot.hostname || `robot_${robot.ip.split('.').pop()}`,
+                                    status: 'online',
+                                    version: 'checking...',
+                                    deployments: [],
+                                    services: {},
+                                    type: robot.type,
+                                    stages: robot.stages || {},
+                                    teleop_host: robot.teleop_host || false,
+                                    teleop_operation: robot.teleop_operation || false
                                 });
                             }
                         });
                         
-                        console.log(`Found ${foundRobots.length} robots from discovery`);
+                        // Mark any robots not in the new discovery as offline
+                        const discoveredIPs = new Set(result.fleet.robots.map(r => r.ip));
+                        robots.forEach((robot, ip) => {
+                            if (!discoveredIPs.has(ip) && robot.status === 'checking') {
+                                robot.status = 'offline';
+                            }
+                        });
                         
-                        // Show success message with robot count
-                        document.getElementById('scanning-status').innerHTML =
-                            `<span style="color: #4CAF50;">✅ Discovery complete! Found ${foundRobots.length} robots</span>`;
+                        // Update grid with staged information
+                        updateRobotGrid();
+                        
+                        // Always update stages with new system
+                        result.fleet.robots.forEach(robot => {
+                            updateRobotStagesDisplay(robot.ip, robot.stages);
+                        });
+                        
+                        // Show blank Pis if detected
+                        if (result.blank_pis && result.blank_pis.length > 0) {
+                            console.log(`Filtered ${result.blank_pis.length} blank Raspberry Pis:`, result.blank_pis);
+                        }
                     } else if (result.status === 'warning') {
-                        console.log('Discovery completed but no robots found');
                         document.getElementById('scanning-status').innerHTML =
                             `<span style="color: #ffa726;">⚠️ ${result.message || 'No robots found'}</span>`;
                     }
                     
-                    // Add discovered robots with proper type information
-                    document.getElementById('scanning-status').textContent =
-                        `Found ${foundRobots.length} devices, checking status...`;
-                    
-                    foundRobots.forEach(robot => {
-                        robots.set(robot.ip, {
-                            ip: robot.ip,
-                            id: robot.hostname !== 'unknown' ? robot.hostname : `checking...`,
-                            status: 'discovered',
-                            version: 'checking...',
-                            deployments: [],
-                            services: {},
-                            type: robot.type === 'confirmed' ? 'LeKiwi Robot' : 'Raspberry Pi (Potential Robot)',
-                            robotType: 'unknown',  // Will be determined by server via detect_robot_type.py
-                            isConfirmed: robot.type === 'confirmed',
-                            isXLE: false  // Will be determined by server via detect_robot_type.py
-                        });
-                    });
-                    
-                    document.getElementById('scanning-status').textContent =
-                        `Discovery complete: Found ${foundRobots.length} robots. Checking status...`;
-                    
-                    // Update grid immediately to show discovered robots
-                    updateRobotGrid();
-                    
-                    // Start staged collection for discovered robots
-                    stagedDataCollection();
-                    
                 } else {
                     document.getElementById('scanning-status').innerHTML =
-                        `<span style="color: #ff6b6b;">❌ Discovery failed - please check the server</span>`;
+                        `<span style="color: #ff6b6b;">❌ Discovery failed</span>`;
                     document.getElementById('scan-icon').textContent = '❌';
                 }
                 
@@ -1549,17 +1597,191 @@
                     `<span style="color: #ff6b6b;">❌ Discovery error: ${error.message}</span>`;
                 document.getElementById('scan-icon').textContent = '❌';
             } finally {
-                // Re-enable button after a delay to prevent accidental re-clicks
+                // Re-enable button after a delay
                 setTimeout(() => {
                     scanning = false;
+                    discoveryInProgress = false;
                     const discoverBtn = document.getElementById('discover-btn');
                     discoverBtn.disabled = false;
                     discoverBtn.style.opacity = '1';
                     discoverBtn.style.cursor = 'pointer';
                     document.getElementById('scan-icon').textContent = '🔍';
                     document.getElementById('scan-text').textContent = 'Discover Robots';
-                }, 2000);  // 2 second cooldown period
+                }, 2000);
             }
+        }
+        
+        // Monitor discovery progress with real-time updates
+        async function monitorDiscoveryProgress() {
+            if (!discoveryInProgress) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/api/discovery/status`);
+                if (response.ok) {
+                    const status = await response.json();
+                    
+                    if (status.running) {
+                        // Discovery still running, check again
+                        setTimeout(monitorDiscoveryProgress, DISCOVERY_STATUS_INTERVAL);
+                    }
+                    
+                    // Update status display
+                    const statusText = `Tracking ${status.robots_tracked} robots (${status.valid_robots} valid, ${status.blank_pis} blank Pis)`;
+                    document.getElementById('scanning-status').textContent = statusText;
+                }
+            } catch (error) {
+                console.error('Error monitoring discovery:', error);
+            }
+        }
+        
+        // Enhanced robot stages display with all 6 stages
+        function updateRobotStagesDisplay(robotIP, stages) {
+            const card = document.querySelector(`[data-robot-ip="${robotIP}"]`);
+            if (!card || !stages) return;
+            
+            // Find or create stages display
+            let stagesDiv = card.querySelector('.robot-stages');
+            if (!stagesDiv) {
+                stagesDiv = document.createElement('div');
+                stagesDiv.className = 'robot-stages';
+                stagesDiv.style.cssText = `
+                    margin-top: 0.8rem;
+                    padding-top: 0.8rem;
+                    border-top: 1px solid var(--border);
+                `;
+                
+                const infoDiv = card.querySelector('.robot-info');
+                if (infoDiv) {
+                    infoDiv.appendChild(stagesDiv);
+                }
+            }
+            
+            // Build enhanced stages display
+            let stagesHTML = `
+                <div style="font-size: 0.7rem; color: var(--text-secondary); margin-bottom: 0.4rem;">
+                    DISCOVERY STAGES:
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.4rem;">
+            `;
+            
+            // Process all 6 stages
+            for (const [stageName, stageInfo] of Object.entries(STAGE_INFO)) {
+                const stage = stages[stageName];
+                if (!stage) continue;
+                
+                let statusIcon = '⚪';
+                let statusColor = '#666';
+                let statusText = 'pending';
+                
+                if (stage.status === 'success') {
+                    statusIcon = '✅';
+                    statusColor = '#4CAF50';
+                    statusText = 'ready';
+                } else if (stage.status === 'active') {
+                    statusIcon = '🟢';
+                    statusColor = '#4CAF50';
+                    statusText = 'active';
+                } else if (stage.status === 'idle') {
+                    statusIcon = '⚪';
+                    statusColor = '#999';
+                    statusText = 'idle';
+                } else if (stage.status === 'warning') {
+                    statusIcon = '⚠️';
+                    statusColor = '#ffa726';
+                    statusText = 'warning';
+                } else if (stage.status === 'error') {
+                    statusIcon = '❌';
+                    statusColor = '#ff6b6b';
+                    statusText = 'error';
+                } else if (stage.status === 'partial') {
+                    statusIcon = '🟡';
+                    statusColor = '#ffa726';
+                    statusText = 'partial';
+                }
+                
+                // Special handling for HOST vs OPERATION distinction
+                if (stageName === 'teleop_host') {
+                    // Update host indicator (service ready)
+                    const hostIndicator = card.querySelector('.teleop-host-indicator');
+                    if (hostIndicator) {
+                        hostIndicator.style.color = stage.status === 'success' ? '#4CAF50' : '#666';
+                        hostIndicator.textContent = stage.status === 'success' ? '🎮 HOST' : '⚪ HOST';
+                    }
+                } else if (stageName === 'teleop_operation') {
+                    // Update operation badge (being controlled)
+                    const badge = document.getElementById(`teleop-${robotIP.replace(/\./g, '-')}`);
+                    if (badge) {
+                        if (stage.status === 'active') {
+                            badge.classList.remove('hidden');
+                            badge.innerHTML = '🕹️ OPERATED';
+                            badge.style.background = 'linear-gradient(135deg, #ff6b6b, #ff4444)';
+                        } else {
+                            badge.classList.add('hidden');
+                        }
+                    }
+                }
+                
+                stagesHTML += `
+                    <div style="
+                        padding: 0.3rem 0.5rem;
+                        background: rgba(${statusColor === '#4CAF50' ? '76, 175, 80' :
+                                         statusColor === '#ffa726' ? '255, 167, 38' :
+                                         statusColor === '#ff6b6b' ? '255, 107, 107' : '102, 102, 102'}, 0.1);
+                        border-left: 2px solid ${statusColor};
+                        border-radius: 3px;
+                        display: flex;
+                        align-items: center;
+                        gap: 0.3rem;
+                    " title="${stage.message || ''}">
+                        <span style="font-size: 0.9rem;">${stageInfo.icon}</span>
+                        <div style="flex: 1;">
+                            <div style="font-size: 0.7rem; color: var(--text-secondary);">
+                                ${stageInfo.label}
+                            </div>
+                            <div style="font-size: 0.65rem; color: ${statusColor};">
+                                ${statusText}
+                            </div>
+                        </div>
+                        <span style="font-size: 0.8rem;">${statusIcon}</span>
+                    </div>
+                `;
+            }
+            
+            stagesHTML += '</div>';
+            
+            // Add summary bar
+            const completedStages = Object.values(stages).filter(s =>
+                s.status === 'success' || s.status === 'active'
+            ).length;
+            const totalStages = Object.keys(stages).length;
+            
+            stagesHTML += `
+                <div style="margin-top: 0.5rem;">
+                    <div style="
+                        height: 4px;
+                        background: var(--bg-lighter);
+                        border-radius: 2px;
+                        overflow: hidden;
+                    ">
+                        <div style="
+                            width: ${(completedStages / totalStages * 100)}%;
+                            height: 100%;
+                            background: linear-gradient(90deg, #4fc3f7, #667eea);
+                            transition: width 0.3s ease;
+                        "></div>
+                    </div>
+                    <div style="
+                        font-size: 0.65rem;
+                        color: var(--text-secondary);
+                        text-align: center;
+                        margin-top: 0.2rem;
+                    ">
+                        ${completedStages}/${totalStages} stages complete
+                    </div>
+                </div>
+            `;
+            
+            stagesDiv.innerHTML = stagesHTML;
         }
         
         // Quick SSH port check (like nmap)
@@ -1896,12 +2118,65 @@
             return null;
         }
 
-        // Staged serial data collection - processes robots one by one through stages
+        // Use parallel staged discovery endpoint for real-time updates
         async function stagedDataCollection() {
             if (scanning || checkingInProgress) return;
             if (robots.size === 0) return;
             
             checkingInProgress = true;
+            
+            try {
+                // Fetch current staged discovery status
+                const response = await fetch(`${API_URL}/api/staged-discovery`);
+                if (!response.ok) {
+                    console.log('Staged discovery not available, using legacy method');
+                    await legacyStagedCollection();
+                    return;
+                }
+                
+                const status = await response.json();
+                
+                // Update all robots with their staged information
+                for (const [ip, robotData] of Object.entries(status.robots)) {
+                    const robot = robots.get(ip);
+                    if (robot) {
+                        // Update stages display
+                        updateRobotStagesDisplay(ip, robotData.stages);
+                        
+                        // Update teleop status based on stages
+                        const hostReady = robotData.stage_summary?.teleop_host_ready;
+                        const beingOperated = robotData.stage_summary?.teleop_operated;
+                        
+                        // Update UI elements
+                        const badge = document.getElementById(`teleop-${ip.replace(/\./g, '-')}`);
+                        if (badge) {
+                            if (beingOperated) {
+                                badge.classList.remove('hidden');
+                                badge.innerHTML = '🕹️ OPERATED';
+                            } else {
+                                badge.classList.add('hidden');
+                            }
+                        }
+                    }
+                }
+                
+                // Update status display
+                const statsText = `${status.stats.valid_robots} robots | ${status.stats.with_teleop_host} hosts ready | ${status.stats.being_operated} operated`;
+                document.getElementById('scanning-status').innerHTML =
+                    `<span style="color: #4CAF50;">✅ ${statsText}</span>`;
+                    
+            } catch (error) {
+                console.error('Staged collection error:', error);
+                // Fall back to legacy method
+                await legacyStagedCollection();
+            } finally {
+                checkingInProgress = false;
+                currentStage = null;
+            }
+        }
+        
+        // Legacy staged collection as fallback
+        async function legacyStagedCollection() {
             const robotIPs = Array.from(robots.keys());
             const totalRobots = robotIPs.length;
             
@@ -2194,9 +2469,9 @@
             // Detect XLERobot type - Advanced bimanual robot (from server detection only)
             const isXLE = robot.robotType === 'xlerobot';  // Only trust server detection
             
-            // Add teleoperation badge
+            // Add teleoperation badge with HOST vs OPERATION distinction
             const teleopBadge = `<div class="teleop-badge hidden" id="teleop-${robot.ip.replace(/\./g, '-')}">
-                🎮 TELEOPERATED
+                🕹️ OPERATED
             </div>`;
             
             card.innerHTML = `
@@ -2231,10 +2506,15 @@
                     <div>IP: ${robot.ip}</div>
                     <div>Version: ${robot.version || 'unknown'}</div>
                     ${robot.services ? `
-                        <div>Services:
-                            ${robot.services.teleop ? '✅ teleop' : '❌ teleop'}
-                            ${robot.services.lekiwi ? '✅ lekiwi' : '❌ lekiwi'}
-                            ${isXLE ? '<span style="color: #ff6b6b;">🤖 Bimanual Mode</span>' : ''}
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span>Services:</span>
+                            <span class="teleop-host-indicator" style="color: ${robot.services?.teleop ? '#4CAF50' : '#666'};">
+                                ${robot.services?.teleop ? '🎮 HOST' : '⚪ HOST'}
+                            </span>
+                            <span style="color: ${robot.services?.lekiwi ? '#4CAF50' : '#666'};">
+                                ${robot.services?.lekiwi ? '✅ lekiwi' : '❌ lekiwi'}
+                            </span>
+                            ${isXLE ? '<span style="color: #ff6b6b;">🤖 Bimanual</span>' : ''}
                         </div>
                     ` : ''}
                     ${robot.installed ? `
@@ -2367,6 +2647,9 @@
                 <button class="btn btn-ghost btn-small" onclick="manualStagedCollection()">
                     🔄 Manual Refresh
                 </button>
+                <button class="btn btn-ghost btn-small" id="continuous-discovery-btn" onclick="toggleContinuousDiscovery()">
+                    ▶️ Continuous Discovery
+                </button>
                 <span id="stage-indicator" style="color: var(--text-secondary); font-size: 0.85rem; margin-left: 10px;">
                     ${currentStage || 'Idle'}
                 </span>
@@ -2405,6 +2688,65 @@
             
             addLog('Starting manual staged collection...', 'info');
             await stagedDataCollection();
+        }
+        
+        // Toggle continuous discovery
+        function toggleContinuousDiscovery() {
+            continuousDiscovery = !continuousDiscovery;
+            const btn = document.getElementById('continuous-discovery-btn');
+            
+            if (continuousDiscovery) {
+                btn.innerHTML = '⏸ Stop Continuous';
+                btn.style.background = 'rgba(76, 175, 80, 0.1)';
+                btn.style.borderColor = '#4CAF50';
+                addLog(`✅ Continuous discovery enabled (every ${CONTINUOUS_DISCOVERY_INTERVAL/1000}s)`, 'info');
+                
+                // Run discovery immediately
+                discoverRobots();
+                
+                // Set up interval
+                continuousDiscoveryInterval = setInterval(() => {
+                    if (!scanning && !checkingInProgress) {
+                        console.log('Running continuous discovery...');
+                        discoverRobots();
+                    }
+                }, CONTINUOUS_DISCOVERY_INTERVAL);
+            } else {
+                btn.innerHTML = '▶️ Continuous Discovery';
+                btn.style.background = '';
+                btn.style.borderColor = '';
+                addLog('⏹️ Continuous discovery stopped', 'warning');
+                
+                // Clear interval
+                if (continuousDiscoveryInterval) {
+                    clearInterval(continuousDiscoveryInterval);
+                    continuousDiscoveryInterval = null;
+                }
+            }
+        }
+        
+        // Add manual discovery trigger
+        async function manualDiscovery() {
+            if (scanning || discoveryInProgress) {
+                addLog('Discovery already in progress', 'warning');
+                return;
+            }
+            
+            addLog('Starting manual discovery...', 'info');
+            await discoverRobots();
+        }
+        
+        // Update discovery without clearing existing robots
+        async function updateDiscovery() {
+            if (scanning || discoveryInProgress) {
+                addLog('Discovery already in progress', 'warning');
+                return;
+            }
+            
+            addLog('🔄 Updating robot discovery (preserving existing data)...', 'info');
+            
+            // Just run discovery - it now properly merges instead of replacing
+            await discoverRobots();
         }
         
         
